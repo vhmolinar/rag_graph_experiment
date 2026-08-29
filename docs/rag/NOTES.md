@@ -269,11 +269,10 @@ registram interpretações declaradas antes do código. Nada nesta seção alter
 3. **TypeScript 5.9.3** (não 7.0.2): ecossistema eslint/vitest mais estável na linha 5.x.
 4. **Registry npm:** `frontend/.npmrc` local aponta para `https://registry.npmjs.org/`
    porque o registry global da máquina é um Artifactory privado fora do escopo.
-4a. **Desvio aprovado em 2026-08-28 (preparação de T05):** `docling 2.123.1` exige
-   `typer >=0.12.5,<0.27.0`, incompatível com o pin aprovado `typer 0.27.2`. O usuário
+4a. **Desvio aprovado em 2026-08-28 e aplicado em 2026-08-29 (T05):** `docling 2.123.1`
+   exige `typer >=0.12.5,<0.27.0`, incompatível com o pin aprovado `typer 0.27.2`. O usuário
    aprovou fixar `typer 0.26.8` (maior estável <0.27.0, verificado no PyPI em
-   2026-08-28). A alteração ainda **não** foi aplicada a `pyproject.toml`/`uv.lock`
-   (parada solicitada ao fim de T04); será efetivada no início de T05.
+   2026-08-28). Aplicado a `pyproject.toml`/`uv.lock` no início de T05.
 5. **Contrato de OCR (decisão do usuário, difere da proposta inicial do implementador):**
    - `Edition.source_sha256` identifica a **varredura original imutável** e
      `source_type=pdf_scan` permanece sobre a edição;

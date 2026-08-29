@@ -10,9 +10,9 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 
 | AC | Descrição resumida | Status | Evidências (testes / comandos) |
 |----|--------------------|--------|--------------------------------|
-| AC-01 | Reingestão idempotente, sem duplicar edição | ◐ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha |
-| AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ◐ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco |
+| AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
+| AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); falta o caminho passagem→leitor (T06/T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ⬜ | T08/T19 |
 | AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
@@ -25,7 +25,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada) |
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05) |
-| AC-16 | Logs/traces sem segredos nem texto integral | ⬜ | T05/T07/T18 |
+| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`. Falta: API/traces (T07/T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
 | AC-19 | Benchmark repetível, compara sem sobrescrever | ⬜ | T19 |
@@ -163,6 +163,69 @@ limite); falha fechada com sidecar ausente/corrompido.
 Limitações conhecidas: remoção física de artefatos antigos fica para operação
 administrativa posterior (SPEC §Versionamento); I/O síncrono por ora (ingestão CLI);
 endpoints HTTP usarão `asyncio.to_thread` se necessário (T14/T17).
+
+### T05 — Representação canônica, adapters Docling e CLI de ingestão ✅
+
+Desvio aprovado aplicado: `typer 0.26.8` (NOTES.md §10.1 item 4a) — `docling 2.123.1`
+exige `typer <0.27.0`. Dependências declaradas nesta tarefa (dentro do conjunto
+aprovado): docling 2.123.1, typer 0.26.8, pyyaml 6.0.3, structlog 26.1.0,
+types-pyyaml (dev). Lockfile atualizado: 164 pacotes; `make audit` e
+`make security-scan` limpos.
+
+Entregáveis:
+
+- **Schema canônico próprio** (`domain/canonical.py`): `CanonicalDocument` com
+  blocos ordenados (heading/parágrafo), hierarquia de títulos, páginas físicas
+  com rótulos, offsets por página, texto normalizado + original, warnings.
+  Invariantes validadas: ordinais sequenciais, offsets aos pares e coerentes,
+  `pdf_scan` nunca extraível diretamente, EPUB sem páginas, PDF exige páginas
+  referenciadas. Golden file: `tests/fixtures/canonical_document.golden.json`.
+- **Adapter Docling** (`adapters/docling_adapter.py`): PDF-texto e EPUB →
+  canônico; mobília de página descartada; tabelas/figuras/fórmulas ignoradas
+  com warning; PDF sem texto falha fechado orientando `rag ocr`. Núcleo de
+  mapeamento testado com `DoclingDocument` programático (determinístico, sem
+  modelo de layout nem rede); EPUB real offline; PDF real sem modelo via
+  backend pypdfium injetado; pipeline padrão com modelo coberto por e2e
+  opcional (`RAG_DOCLING_E2E=1`).
+- **Adapter OCR separado** (`adapters/ocr_adapter.py` + `adapters/pdf_writer.py`):
+  motor plugável (`auto|ocrmac|rapidocr|tesseract`); produz PDF derivado com
+  camada de texto invisível posicionada, gravado atomicamente; nunca
+  sobrescreve o original. Motores reais: e2e opcional (`RAG_OCR_E2E=1`).
+- **Serviço de ingestão** (`application/ingest.py`): validação de arquivo,
+  metadados YAML (idioma: somente `pt` na fase 1), hash, deduplicação por
+  `source_sha256`, extração e persistência em transação única (obra, edição,
+  seções, páginas, artefato derivado OCR). Obra casada por título+autores
+  (`WorksRepository.find_by_identity`). Contrato OCR §10.1.5: edição
+  identifica a varredura original; derivado OCR versionado com
+  `derived_from` = hash do original.
+- **CLI** (`cli/main.py`, entry point `rag`): `ingest` (com `--dry-run`),
+  `ocr` (com `--engine`), `inspect`; exit codes 0/1/2; logs structlog em
+  stderr sem conteúdo do livro nem caminhos absolutos.
+
+Comandos executados em 2026-08-29 (mesmo ambiente de T01):
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK — 164 pacotes, lockfile consistente |
+| `make lint` / `make format-check` / `make typecheck` | OK — ruff, prettier, mypy strict (64 arquivos), tsc |
+| `make test` | OK — 213 unitários passed, 1 skipped (e2e docling opcional), 1 frontend |
+| `make test-integration` | OK — 71 passed (PostgreSQL real via testcontainers) |
+| `make audit` | OK — pip-audit strict: nenhuma vulnerabilidade; npm audit: 0 |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+
+Evidências-chave por critério (ver matriz): AC-01 (`test_reingest_is_idempotent`,
+`test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts`),
+AC-02 (`test_two_editions_share_one_work`), AC-03
+(`test_pages_and_offsets_recompose_excerpt` — offsets recompõem o trecho;
+`test_scan_ingest_preserves_original_identity` — citação endereça o original),
+parcial AC-16 (logs do CLI sem conteúdo/caminhos; `IngestReport`/`OcrReport`
+não carregam texto).
+
+Limitações conhecidas: pipeline padrão de PDF usa modelo de layout baixado do
+HF Hub na primeira execução (cache local; pinagem de revisão do modelo é
+interna ao docling 2.123.1); rótulos impressos de página usam o índice físico
++1 (Docling não extrai `PageLabels` na fase 1); OCR real depende de plataforma
+(ocrmac no macOS) — contrato testado com stub, integração real opcional.
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

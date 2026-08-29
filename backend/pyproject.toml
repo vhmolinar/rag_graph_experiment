@@ -5,10 +5,16 @@ description = "RAG de livros — fase 1 (privado, local)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic==1.19.1",
+    "docling==2.123.1",
     "pgvector==0.5.0",
     "psycopg[binary,pool]==3.3.4",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
+    "pyyaml==6.0.3",
+    "structlog==26.1.0",
+    # typer fixado em 0.26.8 (maior estável <0.27.0): docling 2.123.1 exige
+    # typer <0.27.0 — desvio aprovado em NOTES.md §10.1 item 4a.
+    "typer==0.26.8",
 ]
 
 [dependency-groups]
@@ -20,7 +26,11 @@ dev = [
     "pytest-asyncio==1.4.0",
     "ruff==0.16.5",
     "testcontainers==4.15.0",
+    "types-pyyaml==6.0.12.20260815",
 ]
+
+[project.scripts]
+rag = "rag.cli.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -59,7 +69,8 @@ select = [
 
 [tool.mypy]
 python_version = "3.12"
-mypy_path = "src"
+mypy_path = ["src", "tests/fixtures"]
+explicit_package_bases = true
 packages = ["rag"]
 strict = true
 disallow_untyped_defs = true
@@ -72,6 +83,10 @@ no_implicit_reexport = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = "pypdfium2.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
