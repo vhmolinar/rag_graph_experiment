@@ -391,7 +391,78 @@ Decisões e interpretações ao corrigir `docs/rag/REVIEW_T05_ROUND3.md`
    automaticamente; se isso for observado, adicionar o logger específico à
    função em vez de tentar uma solução totalmente genérica.
 
-### 10.6 Incidentes de cadeia de suprimentos
+### 10.6 Registro do implementador — 2026-08-29 (fase 1, T06)
+
+Interpretações declaradas antes de implementar T06 (chunking e indexação),
+não bloqueantes; podem ser revistas pelo usuário.
+
+1. **`rag index` reextrai o documento em vez de reconstruir a partir do
+   banco.** T05 persiste apenas `Section` (path/level/páginas) e `Page`
+   (texto completo da página) — o detalhe de bloco (parágrafo a parágrafo,
+   com `section_path` e offset exatos) do `CanonicalDocument` não sobrevive
+   à ingestão. Reconstruir esse detalhe a partir de `Section`+`Page` seria
+   ambíguo (uma página pode conter vários parágrafos de seções diferentes).
+   `rag index` busca o artefato correto (original para `pdf_text`/`epub`;
+   derivado OCR para `pdf_scan`, mesma regra de `_extraction_type` de T05)
+   no `ArtifactStore` por hash, reextrai via `DoclingExtractor` e casa o
+   `section_path`/`page_index` de cada bloco recuperado com os `Section`/
+   `Page` já persistidos (por igualdade de `path` e `physical_index`).
+   Nenhuma coluna nova em `sections`/`pages` foi necessária.
+2. **Hierarquia pai/filho: pai por seção-folha, sem embedding.** Um
+   "parent" cobre uma seção-folha inteira (ou uma janela grande, se a seção
+   ultrapassar `parent_target_tokens`); os "filhos" são sub-divisões
+   menores dentro de cada pai, na ordem de leitura, cada um referenciando o
+   pai via `parent_passage_id`. Só os filhos recebem embedding
+   (`embedding_version_id`/`embedding` preenchidos); os pais ficam com
+   ambos nulos — o schema de `Passage` já previa isso (`embedding_version_id`
+   opcional). Filtrar pais fora da busca vetorial/lexical é responsabilidade
+   de T08/T09, não deste registro.
+3. **Passagem pode abranger mais de uma página física.** Um chunk não para
+   numa quebra de página (o texto de um livro não para). Quando
+   `page_start_id != page_end_id`, `char_start` refere-se ao texto de
+   `page_start_id` e `char_end` ao texto de `page_end_id`; recompor o trecho
+   exige concatenar `page_start.text[char_start:]` + o texto integral de
+   páginas intermediárias + `page_end.text[:char_end]`. EPUB não tem
+   páginas: `page_start_id`/`page_end_id`/`char_start`/`char_end` ficam
+   `None` e o texto citável é o próprio `Passage.text` (T17 já prevê
+   comportamento explícito para EPUB sem paginação estável).
+4. **Contagem de tokens e sentenças são heurísticas, não um tokenizer
+   real.** Nenhuma lib de tokenização (`tiktoken` etc.) está no conjunto de
+   dependências aprovado (NOTES.md §10.1). `token_count` usa uma
+   aproximação simples (caracteres/4); limites de sentença usam um
+   separador por pontuação com guarda para abreviações comuns em
+   português. Ambos já estão na lista de "pontos que devem ser calibrados"
+   (NOTES.md §4) — o benchmark de T19 é o lugar certo para validar/ajustar,
+   não este registro.
+5. **`--force` apaga as passagens existentes da edição antes de reindexar.**
+   Sem `--force`, uma edição já indexada (tem passagens) é idempotente (não
+   faz nada, como `rag ingest`). Com `--force`, as passagens antigas da
+   edição são removidas na mesma transação antes de criar as novas. Ainda
+   não há `summaries`/`concepts` referenciando passagens (T11), então essa
+   remoção é segura hoje; se uma passagem estiver referenciada no futuro, a
+   FK (sem CASCADE) fará a remoção falhar fechado em vez de corromper
+   silenciosamente — o que é o comportamento correto a preservar quando T11
+   existir.
+6. **Adapter HTTP de embeddings mínimo construído agora, não adiado
+   inteiramente para T07.** "Geração em lote de embeddings" é entregável
+   explícito de T06 e todos os testes de T06 (inclusive "dimensão
+   inesperada falha antes de persistir") são satisfeitos com um adapter
+   real, não só um double. Implementado um cliente HTTP compatível com
+   OpenAI (`POST {base_url}/embeddings`) usando `httpx` — dependência já
+   aprovada em NOTES.md §10.1 item 1, apenas ainda não consumida — com
+   autenticação Bearer via variável de ambiente e mapeamento de erro para
+   `ModelTimeoutError`/`ModelUnavailableError`/`ModelResponseError`/
+   `EmbeddingDimensionError`. Deliberadamente SEM retries, circuit breaker
+   ou limite de concorrência — esses são o valor agregado explícito de T07,
+   que deve enriquecer este mesmo adapter, não substituí-lo. `respx`
+   (dev, já aprovado) usado para o teste de contrato HTTP.
+7. **Nenhum `ExtractionVersion` é criado por `rag index`.** Não existe hoje
+   coluna em `sections`/`pages`/`passages` para associá-lo — adicionar uma
+   agora seria alterar o schema de T03 (já revisado/aprovado) por um motivo
+   fora do escopo declarado de T06. Meramente registrado aqui para
+   referência futura (T18, rastreabilidade).
+
+### 10.7 Incidentes de cadeia de suprimentos
 
 Nenhum. Verificado em 2026-08-28: sem `plain-crypto-js`, sem axios 1.14.1/0.30.4 (axios
 não é dependência), sem referência a `sfrclak.com`. `make security-scan` automatiza essa

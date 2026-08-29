@@ -12,7 +12,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); falta o caminho passagem→leitor (T06/T17) |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); falta o caminho passagem→leitor (T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ⬜ | T08/T19 |
 | AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
@@ -21,10 +21,10 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ⬜ | T10/T12/T13 |
-| AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable` |
+| AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`. Falta: API/traces (T07/T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
@@ -465,17 +465,101 @@ Gates reexecutados em 2026-08-29 após as correções R6-01–R6-06:
 | `RAG_OCR_E2E=1` (unit: 2 e2e reais + subprocesso R6-02) | OK — 2 passed |
 | `RAG_OCR_E2E=1` (integration: e2e completo até `rag ingest`) | OK — 1 passed |
 
-Comandos reexecutados em 2026-08-29 após as correções:
+### T06 — Chunking e indexação ✅
+
+Dependências novas declaradas nesta tarefa (dentro do conjunto aprovado,
+NOTES.md §10.1 item 1, ainda não consumidas antes): `httpx==0.28.1`
+(runtime — cliente do adapter de embeddings) e `respx==0.23.1` (dev —
+contract test HTTP). Nenhuma dependência fora do conjunto aprovado.
+
+Interpretações registradas em NOTES.md §10.6 antes de implementar: `rag
+index` reextrai o documento via Docling em vez de reconstruir a partir de
+`Section`/`Page` (T05 não persiste detalhe de bloco); hierarquia pai/seção-
+folha sem embedding nos pais; passagem pode abranger mais de uma página
+física; contagem de tokens/sentenças são heurísticas (nenhum tokenizador
+real está no conjunto aprovado); `--force` apaga passagens existentes antes
+de reindexar; adapter HTTP de embeddings mínimo (sem retries/circuit
+breaker — isso é T07) construído agora porque "geração em lote de
+embeddings" é entregável explícito desta tarefa.
+
+Entregáveis:
+
+- **Chunker estrutural e configurável** (`domain/chunking.py`, função pura
+  `chunk_document`): agrupa sentenças por `section_path` completo (nunca
+  mistura seções, a fortiori nunca mistura capítulos); nunca corta uma
+  sentença (toda fronteira de janela cai numa fronteira de sentença);
+  hierarquia pai/filho — cada seção-folha vira uma ou mais janelas-pai
+  (`parent_target_tokens`), cada pai sub-dividido em janelas-filho
+  (`child_target_tokens`/`child_overlap_tokens` configurável); offsets
+  recompõem o trecho original via fatia exata de `CanonicalPage.text`
+  (uma página) ou concatenação de fatias (múltiplas páginas); EPUB sem
+  offsets (sem páginas físicas). `ChunkingParams` vira `ChunkingVersion.params`.
+- **Serviço de indexação** (`application/index.py`, `IndexingService`):
+  reextrai o artefato correto (original ou derivado OCR) do `ArtifactStore`
+  por hash; casa `section_path`/`page_index` dos blocos recuperados com
+  `Section`/`Page` já persistidos; cria/reusa `ChunkingVersion` e
+  `EmbeddingVersion` (`VersionsRepository.get_or_create`, idempotente); gera
+  embeddings em lote SÓ para os filhos; valida contagem e dimensão dos
+  embeddings retornados contra a versão registrada ANTES de qualquer
+  INSERT; persiste pais e filhos numa única transação; `--force` remove
+  passagens existentes da edição antes de reindexar (sem `--force`,
+  reindexar é idempotente — no-op).
+- **Adapter HTTP de embeddings** (`adapters/embedding_adapter.py`,
+  `OpenAiCompatibleEmbeddingProvider`): `POST {base_url}/embeddings`
+  compatível com OpenAI, autenticação Bearer via `EmbeddingEndpointSettings`
+  (env `EMBEDDING_*`), mapeamento de erro para `ModelTimeoutError`/
+  `ModelUnavailableError`/`RateLimitError`/`ModelResponseError`; valida que
+  a resposta tem uma dimensão consistente entre todos os vetores. Sem
+  retries/circuit breaker/limite de concorrência — isso é T07.
+- **CLI** (`rag index <edition-id> [--force]`): chunking + embeddings em
+  lote para uma edição já ingerida; `rag inspect` passou a mostrar a
+  contagem de passagens (pais/filhos).
+
+Testes/evidências:
+
+- chunks não cruzam capítulos: `test_chunks_never_mix_chapters`;
+- frases não são cortadas: `test_sentences_are_never_cut` (splits só em
+  fronteira de sentença, verificado recompondo cada span do chunk);
+- offsets recompõem o trecho original: `test_offsets_recompose_original_single_page`,
+  `test_offsets_recompose_original_across_pages` (unit, pura) e
+  `test_indexes_pdf_with_page_offsets` (integração, PostgreSQL real);
+- sobreposição configurável: `test_overlap_repeats_trailing_sentences`;
+- hierarquia pai/filho: `test_parent_child_hierarchy` (pai sem
+  `parent_index`, mesmo `section_path`, intervalo do pai contém o do filho);
+- mudança de parâmetros cria nova versão: `test_different_chunking_params_create_new_version`;
+- dimensão inesperada do embedding falha antes de persistir:
+  `test_embedding_dimension_mismatch_fails_before_persisting`,
+  `test_embedding_count_mismatch_fails_before_persisting` (ambos confirmam
+  ZERO passagens persistidas após a falha);
+- idempotência/`--force`: `test_reindex_without_force_is_idempotent`,
+  `test_force_reindexes_and_replaces_passages`;
+- contrato HTTP do adapter de embeddings: 14 testes em
+  `test_embedding_adapter.py` (respx — sucesso, timeout, erro de conexão,
+  429 com/sem `Retry-After`, 5xx, 4xx, corpo malformado, contagem/dimensão
+  inconsistente, header de autenticação).
+
+Comandos executados em 2026-08-29:
 
 | Comando | Resultado |
 |---------|-----------|
-| `make lock` | OK |
+| `make lock` | OK — 165 pacotes |
 | `make lint` / `make format-check` / `make typecheck` | OK |
-| `make test` | OK — 233 unitários passed, 2 skipped (e2e opcionais), 1 frontend |
-| `make test-integration` | OK — 90 passed, 1 skipped (e2e opcional) |
+| `make test` | OK — 263 unitários passed, 3 skipped (e2e opcionais); 1 frontend |
+| `make test-integration` | OK — 103 passed, 1 skipped (e2e opcional) |
 | `make audit` | OK — nenhuma vulnerabilidade conhecida |
 | `make security-scan` | OK — nenhum IOC bloqueado |
-| `RAG_OCR_E2E=1` (unit + integration) | OK — 2 passed (motor real rapidocr/torch, até `rag ingest`) |
+
+Critérios: AC-03 (offsets recompõem o trecho — coberto acima), AC-12 (via
+`context_header` separado do texto citável — `Passage.text` nunca inclui o
+cabeçalho), AC-15 (versões imutáveis via `ChunkingVersion`/`EmbeddingVersion`,
+reindexação nunca sobrescreve uma versão existente).
+
+Limitações conhecidas: contagem de tokens e fronteiras de sentença são
+heurísticas (calibração fica para o benchmark de T19, NOTES.md §4);
+`--force` remove passagens antigas sem reter histórico (aceitável hoje —
+`summaries`/`concepts` de T11 ainda não existem); nenhum `ExtractionVersion`
+é registrado por `rag index` (não há coluna para associá-lo no schema
+atual).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

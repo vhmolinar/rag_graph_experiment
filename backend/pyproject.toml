@@ -6,6 +6,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic==1.19.1",
     "docling==2.123.1",
+    # T06: cliente HTTP do adapter de embeddings (compatível com OpenAI).
+    "httpx==0.28.1",
     "pgvector==0.5.0",
     "psycopg[binary,pool]==3.3.4",
     "pydantic==2.13.5",
@@ -27,6 +29,8 @@ dev = [
     "pip-audit==2.10.1",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
+    # T06: contract test do adapter de embeddings (servidor HTTP simulado).
+    "respx==0.23.1",
     "ruff==0.16.5",
     "testcontainers==4.15.0",
     "types-pyyaml==6.0.12.20260815",

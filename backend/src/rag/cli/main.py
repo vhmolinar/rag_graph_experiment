@@ -31,15 +31,24 @@ import structlog
 import typer
 
 from rag.adapters.docling_adapter import DoclingExtractor
+from rag.adapters.embedding_adapter import (
+    EmbeddingEndpointSettings,
+    OpenAiCompatibleEmbeddingProvider,
+)
 from rag.adapters.ocr_adapter import DoclingOcrEngine, OcrEngine, ocr_pdf
+from rag.application.index import IndexingService
 from rag.application.ingest import IngestionService, load_metadata
+from rag.domain.chunking import ChunkingParams
 from rag.domain.errors import RagError
+from rag.domain.providers import EmbeddingProvider
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.config import DatabaseSettings, StorageSettings
 from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
+from rag.infrastructure.repositories.passages import PassagesRepository
 from rag.infrastructure.repositories.works import WorksRepository
+from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
 _DEBUG_LOG_ENV = "RAG_DEBUG_LOG"
 
@@ -159,6 +168,7 @@ async def _inspect_async(edition_id: UUID) -> int:
             work = await WorksRepository(conn).get(edition.work_id)
             sections = await SectionsRepository(conn).list_by_edition(edition.id)
             pages = await PagesRepository(conn).list_by_edition(edition.id)
+            passages = await PassagesRepository(conn).list_by_edition(edition.id)
     finally:
         await db.close()
 
@@ -174,7 +184,11 @@ async def _inspect_async(edition_id: UUID) -> int:
     typer.echo(f"  tipo: {edition.source_type}  status: {edition.ingestion_status}")
     typer.echo(f"  sha256: {edition.source_sha256}")
     typer.echo(f"  artefato original: {integrity}")
-    typer.echo(f"  seções: {len(sections)}  páginas: {len(pages)}")
+    children = sum(1 for p in passages if p.embedding_version_id is not None)
+    typer.echo(
+        f"  seções: {len(sections)}  páginas: {len(pages)}  "
+        f"passagens: {len(passages)} (pais={len(passages) - children} filhos={children})"
+    )
     for derived in edition.derived_artifacts:
         typer.echo(f"  derivado[{derived.kind}]: {derived.sha256} via {derived.generator}")
     for warning in edition.extraction_warnings:
@@ -182,7 +196,48 @@ async def _inspect_async(edition_id: UUID) -> int:
     return 0
 
 
-def create_app(engine_factory: Callable[[str], OcrEngine] = DoclingOcrEngine) -> typer.Typer:
+def _default_embedding_provider() -> EmbeddingProvider:
+    return OpenAiCompatibleEmbeddingProvider(EmbeddingEndpointSettings())
+
+
+async def _index_async(
+    edition_id: UUID, force: bool, embedding_provider_factory: Callable[[], EmbeddingProvider]
+) -> int:
+    storage = StorageSettings()
+    store = ArtifactStore(storage.root, max_size_bytes=storage.max_size_bytes)
+    embedding_provider = embedding_provider_factory()
+    embedding_settings = EmbeddingEndpointSettings()
+    service = IndexingService(store, DoclingExtractor(), embedding_provider)
+    db = Database(DatabaseSettings())
+    await db.open()
+    try:
+        async with db.connection() as conn:
+            report = await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(),
+                embedding_model_name=embedding_settings.model,
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                force=force,
+            )
+    finally:
+        aclose = getattr(embedding_provider, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        await db.close()
+    mode = "criada" if report.created else "existente"
+    typer.echo(
+        f"indexação[{mode}] edição={report.edition_id} pais={report.parents} "
+        f"filhos={report.children} chunking_version={report.chunking_version_id} "
+        f"embedding_version={report.embedding_version_id or '-'}"
+    )
+    return 0
+
+
+def create_app(
+    engine_factory: Callable[[str], OcrEngine] = DoclingOcrEngine,
+    embedding_provider_factory: Callable[[], EmbeddingProvider] = _default_embedding_provider,
+) -> typer.Typer:
     app = typer.Typer(
         name="rag",
         help="RAG de livros — ingestão, OCR e inspeção (fase 1, local).",
@@ -237,6 +292,34 @@ def create_app(engine_factory: Callable[[str], OcrEngine] = DoclingOcrEngine) ->
             f"derivado OCR: {report.output_path} sha256={report.sha256} "
             f"páginas={report.pages} linhas={report.lines}"
         )
+
+    @app.command()
+    def index(
+        edition_id: Annotated[str, typer.Argument(help="UUID da edição")],
+        force: Annotated[
+            bool, typer.Option("--force", help="reindexa mesmo se já houver passagens")
+        ] = False,
+    ) -> None:
+        """Chunking estrutural + embeddings em lote para uma edição já ingerida."""
+        try:
+            parsed = UUID(edition_id)
+        except ValueError:
+            typer.secho("erro: edition-id deve ser um UUID.", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1) from None
+        log = structlog.get_logger()
+        log.info("index.started", edition_id=str(parsed), force=force)
+        try:
+            code = asyncio.run(_index_async(parsed, force, embedding_provider_factory))
+        except RagError as exc:
+            log.info("index.failed", edition_id=str(parsed), error=exc.message)
+            _echo_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            log.exception("index.unexpected_error", edition_id=str(parsed))
+            typer.secho(f"erro inesperado: {type(exc).__name__}", err=True)
+            raise typer.Exit(code=2) from exc
+        log.info("index.finished", edition_id=str(parsed), force=force)
+        raise typer.Exit(code=code)
 
     @app.command()
     def inspect(

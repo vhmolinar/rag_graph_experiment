@@ -16,8 +16,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 from builders import make_epub
 
 from rag.cli.main import create_app
+from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
 pytestmark = pytest.mark.integration
+
+
+class _FakeEmbeddingProvider:
+    """Determinístico, sem rede — usado para exercitar `rag index` sem T07."""
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0] * EMBEDDING_COLUMN_DIMENSIONS for _ in texts]
+
+    async def embed_query(self, text: str) -> list[float]:
+        return [1.0] * EMBEDDING_COLUMN_DIMENSIONS
 
 
 @pytest.fixture
@@ -119,3 +130,56 @@ class TestIngestCommand:
         )
         assert result.exit_code == 1
         assert "não encontrada" in result.output
+
+
+class TestIndexCommand:
+    def test_index_then_inspect_shows_passages(
+        self, cli_env: dict[str, str], book: tuple[Path, Path]
+    ) -> None:
+        runner = CliRunner()
+        app = create_app(embedding_provider_factory=_FakeEmbeddingProvider)
+        epub, meta = book
+        ingest = runner.invoke(app, ["ingest", str(epub), "--metadata", str(meta)], env=cli_env)
+        assert ingest.exit_code == 0, ingest.output
+        edition_id = ingest.output.split("id=")[1].split()[0]
+
+        result = runner.invoke(app, ["index", edition_id], env=cli_env)
+        assert result.exit_code == 0, result.output
+        assert "indexação[criada]" in result.output
+        assert "pais=2" in result.output
+
+        inspect = runner.invoke(app, ["inspect", edition_id], env=cli_env)
+        assert inspect.exit_code == 0, inspect.output
+        assert "passagens:" in inspect.output
+        assert "pais=2" in inspect.output
+
+    def test_reindex_idempotent_without_force(
+        self, cli_env: dict[str, str], book: tuple[Path, Path]
+    ) -> None:
+        runner = CliRunner()
+        app = create_app(embedding_provider_factory=_FakeEmbeddingProvider)
+        epub, meta = book
+        runner.invoke(app, ["ingest", str(epub), "--metadata", str(meta)], env=cli_env)
+        ingest = runner.invoke(app, ["ingest", str(epub), "--metadata", str(meta)], env=cli_env)
+        edition_id = ingest.output.split("id=")[1].split()[0]
+
+        first = runner.invoke(app, ["index", edition_id], env=cli_env)
+        second = runner.invoke(app, ["index", edition_id], env=cli_env)
+        assert first.exit_code == 0
+        assert second.exit_code == 0
+        assert "indexação[criada]" in first.output
+        assert "indexação[existente]" in second.output
+
+    def test_index_invalid_uuid_exit_one(self, cli_env: dict[str, str]) -> None:
+        runner = CliRunner()
+        app = create_app(embedding_provider_factory=_FakeEmbeddingProvider)
+        result = runner.invoke(app, ["index", "não-é-uuid"], env=cli_env)
+        assert result.exit_code == 1
+        assert "UUID" in result.output
+
+    def test_index_unknown_edition_exit_one(self, cli_env: dict[str, str]) -> None:
+        runner = CliRunner()
+        app = create_app(embedding_provider_factory=_FakeEmbeddingProvider)
+        result = runner.invoke(app, ["index", "00000000-0000-0000-0000-000000000000"], env=cli_env)
+        assert result.exit_code == 1
+        assert "erro:" in result.output

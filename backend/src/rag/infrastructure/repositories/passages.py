@@ -100,3 +100,11 @@ class PassagesRepository:
                 (edition_id,),
             )
             return [Passage(**row) for row in await cur.fetchall()]
+
+    async def delete_by_edition(self, edition_id: UUID) -> int:
+        """Remove todas as passagens da edição (pais e filhos juntos, numa
+        única instrução — seguro mesmo com a FK auto-referencial de
+        `parent_passage_id`). Usado por `rag index --force` (T06)."""
+        async with self._conn.cursor() as cur:
+            await cur.execute("DELETE FROM passages WHERE edition_id = %s", (edition_id,))
+            return cur.rowcount
