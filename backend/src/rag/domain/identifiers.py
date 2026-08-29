@@ -1,6 +1,7 @@
 """Value objects de identidade e hash."""
 
 import hashlib
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import BeforeValidator, StringConstraints
@@ -25,3 +26,11 @@ def sha256_of_text(text: str) -> str:
 
 def sha256_of_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def sha256_of_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()

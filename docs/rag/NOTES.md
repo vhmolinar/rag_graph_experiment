@@ -305,7 +305,93 @@ registram interpretações declaradas antes do código. Nada nesta seção alter
    calibrável por configuração.
 7. **Playwright:** pacote pinado desde T01; download de browsers adiado para T16/T17.
 
-### 10.3 Incidentes de cadeia de suprimentos
+### 10.3 Registro do implementador — 2026-08-29 (fase 1, correções de revisão T05)
+
+Interpretações declaradas ao corrigir `docs/rag/REVIEW_T05.md` (T5-01 a T5-10),
+não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Derivado OCR reimplementado sem nova dependência:** `pdf_writer.py` passou
+   a usar `pypdfium2` (já transitiva via Docling) para abrir o PDF original e
+   inserir objetos de texto invisíveis diretamente nas páginas existentes, em
+   vez de construir um PDF novo do zero. Corrige T5-01 (imagem do original
+   preservada) e T5-02 (Unicode via `FPDFText_SetText`, que aceita UTF-16
+   nativamente) na mesma mudança, sem adicionar pacote algum.
+2. **Proveniência do OCR via sidecar de arquivo:** `rag ocr` grava
+   `<output>.provenance.json` (hash de entrada/saída, engine/versão, contagem
+   de páginas) ao lado do derivado; `rag ingest` valida esse sidecar antes de
+   aceitar `ocr_artifact`. Não há tabela nova no banco para isso — o sidecar
+   viaja com o arquivo no disco, como o próprio derivado, até a ingestão.
+3. **Notas de rodapé e legendas são texto citável:** `footnote`/`caption`
+   deixaram de ser descartados com warning e passaram a `_PARAGRAPH_LABELS`.
+   Não há decisão anterior em contrário — a lacuna foi um artefato do mapeamento
+   inicial de T05, não uma escolha deliberada.
+4. **Warnings de extração persistidos:** novo campo `Edition.extraction_warnings`
+   (migration `0002`, `jsonb`) para que `rag inspect` os exiba depois que o
+   processo de ingestão termina.
+5. **Logs do CLI: JSON, não key-value:** alinhado ao formato usado no resto do
+   sistema (SPEC/T18: "logs JSON redigidos"). Traceback nunca vai ao console;
+   só é gravado se `RAG_DEBUG_LOG` apontar para um arquivo.
+
+### 10.4 Registro do implementador — 2026-08-29 (fase 1, segunda rodada de revisão T05)
+
+Decisões e interpretações ao corrigir `docs/rag/REVIEW_T05_ROUND2.md`
+(R5-01 a R5-11).
+
+1. **`pypdfium2` promovido a dependência direta** (correção R5-09) —
+   **aprovado explicitamente pelo usuário** nesta sessão, conforme protocolo
+   §9 (o implementador não aprova dependências novas unilateralmente).
+   `pyproject.toml` declara `pypdfium2==5.13.0` (mesma versão já resolvida
+   transitivamente); lockfile inalterado em conteúdo.
+2. **RapidOCR fixado no backend `torch`:** o padrão da própria lib
+   (`onnxruntime`) nunca foi dependência do projeto; `torch` já era
+   transitiva via Docling. Nenhuma dependência nova; sem essa fixação, o
+   e2e opcional falhava com `ImportError: onnxruntime is not installed`.
+3. **Granularidade de `engine_version` tem limite documentado:** o modo
+   `auto` não é resolvido a um motor concreto no registro de proveniência —
+   Docling não expõe publicamente qual motor o modo automático escolheu, e
+   introspectar isso dependeria de internals não estáveis entre versões.
+   Da mesma forma, versões de binário (Tesseract) e hashes de modelo
+   (RapidOCR/ocrmac) não são capturados — o objetivo central do contrato de
+   proveniência (impedir associar artefato de outro livro) já é garantido
+   pelos hashes de entrada/saída, independente dessa granularidade adicional.
+   Recomendação: evitar `--engine auto` quando atribuição exata de motor for
+   necessária.
+4. **Alinhamento geométrico do texto invisível é parcial, por desenho:**
+   `OcrLine.width` ajusta a largura à bbox detectada; a altura continua
+   vindo só de `bbox.b`/`bbox.t` sem refinamento adicional (não era a lacuna
+   apontada). Alinhamento pixel-perfeito de seleção será validado quando o
+   leitor (T17) implementar destaque real sobre o PDF — este momento não é
+   o ponto de verificação apropriado para essa garantia mais forte.
+
+### 10.5 Registro do implementador — 2026-08-29 (fase 1, terceira rodada de revisão T05)
+
+Decisões e interpretações ao corrigir `docs/rag/REVIEW_T05_ROUND3.md`
+(R6-01 a R6-06).
+
+1. **Proveniência do OCR embutida no PDF, não mais em sidecar** (correção
+   R6-01, bloqueadora): a revisão provou que dois `os.replace()`
+   consecutivos nunca são atômicos em conjunto. Em vez de um protocolo de
+   commit de dois arquivos mais elaborado (manifesto versionado, diretório
+   com troca atômica — ambos ainda coordenam dois objetos), a proveniência
+   passou a ser um ANEXO dentro do próprio PDF derivado, publicado como um
+   único arquivo por uma única troca atômica. `OcrProvenance.output_sha256`
+   foi removido — não há mais um segundo artefato com o qual comparar.
+2. **`engine_version` renomeado para `adapter_version`** (correção R6-05) —
+   **aprovado explicitamente pelo usuário** ao ser questionado entre
+   investir mais para resolver `auto`/versões de binário/hashes de modelo,
+   ou renomear e documentar o escopo parcial. O nome antigo sugeria uma
+   garantia de reprodução completa que o campo nunca ofereceu; o item 3 do
+   registro anterior (§10.4) permanece válido em conteúdo, só a nomenclatura
+   mudou.
+3. **Redação de logging de terceiros é best-effort, não uma garantia geral:**
+   `_harden_third_party_logging()` cobre especificamente RapidOCR (logger
+   `logging.getLogger("RapidOCR")`) e avisos do Torch (`warnings.warn`) —
+   os dois emissores identificados na reprodução da revisão. Uma biblioteca
+   nova com um logger de nome desconhecido no futuro não seria coberta
+   automaticamente; se isso for observado, adicionar o logger específico à
+   função em vez de tentar uma solução totalmente genérica.
+
+### 10.6 Incidentes de cadeia de suprimentos
 
 Nenhum. Verificado em 2026-08-28: sem `plain-crypto-js`, sem axios 1.14.1/0.30.4 (axios
 não é dependência), sem referência a `sfrclak.com`. `make security-scan` automatiza essa

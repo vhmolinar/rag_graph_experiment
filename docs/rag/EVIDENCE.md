@@ -188,9 +188,11 @@ Entregáveis:
   backend pypdfium injetado; pipeline padrão com modelo coberto por e2e
   opcional (`RAG_DOCLING_E2E=1`).
 - **Adapter OCR separado** (`adapters/ocr_adapter.py` + `adapters/pdf_writer.py`):
-  motor plugável (`auto|ocrmac|rapidocr|tesseract`); produz PDF derivado com
-  camada de texto invisível posicionada, gravado atomicamente; nunca
-  sobrescreve o original. Motores reais: e2e opcional (`RAG_OCR_E2E=1`).
+  motor plugável (`auto|ocrmac|rapidocr|tesseract`); o derivado é o PRÓPRIO
+  PDF original com uma camada de texto invisível sobreposta (imagem, página e
+  dimensões preservadas), gravado atomicamente, acompanhado de um sidecar de
+  proveniência verificável (`<output>.provenance.json`); nunca sobrescreve o
+  original. Motores reais: e2e opcional (`RAG_OCR_E2E=1`, `rapidocr` local).
 - **Serviço de ingestão** (`application/ingest.py`): validação de arquivo,
   metadados YAML (idioma: somente `pt` na fase 1), hash, deduplicação por
   `source_sha256`, extração e persistência em transação única (obra, edição,
@@ -199,8 +201,10 @@ Entregáveis:
   identifica a varredura original; derivado OCR versionado com
   `derived_from` = hash do original.
 - **CLI** (`cli/main.py`, entry point `rag`): `ingest` (com `--dry-run`),
-  `ocr` (com `--engine`), `inspect`; exit codes 0/1/2; logs structlog em
-  stderr sem conteúdo do livro nem caminhos absolutos.
+  `ocr` (com `--engine`), `inspect` (inclui warnings de extração); exit codes
+  0/1/2; logs structlog JSON em stderr sem conteúdo do livro, caminhos
+  absolutos ou traceback (`error_type` apenas; traceback completo só em
+  `RAG_DEBUG_LOG`, quando configurado).
 
 Comandos executados em 2026-08-29 (mesmo ambiente de T01):
 
@@ -226,6 +230,252 @@ HF Hub na primeira execução (cache local; pinagem de revisão do modelo é
 interna ao docling 2.123.1); rótulos impressos de página usam o índice físico
 +1 (Docling não extrai `PageLabels` na fase 1); OCR real depende de plataforma
 (ocrmac no macOS) — contrato testado com stub, integração real opcional.
+
+### T05 — Correções da revisão (`docs/rag/REVIEW_T05.md`, T5-01 a T5-10)
+
+> **Seção histórica (correção R6-06):** descreve o estado logo após a
+> primeira rodada de correções. Detalhes específicos abaixo foram
+> substituídos por rodadas posteriores — ver "Segunda rodada" e "Terceira
+> rodada" logo a seguir para o estado atual. Em particular:
+> `_render_extrema` foi substituída por comparação pixel a pixel (R5-06,
+> depois refinada); o sidecar `<output>.provenance.json` e o campo
+> `output_sha256` descritos abaixo foram REMOVIDOS na terceira rodada
+> (R6-01) — a proveniência agora vive embutida no próprio PDF; `pypdfium2`
+> é dependência direta desde R5-09 (não mais só transitiva).
+
+Todos os bloqueadores e correções importantes foram tratados antes de reenviar
+T05. Resumo por item:
+
+- **T5-01/T5-02 (bloqueador)** — `pdf_writer.py` foi reescrito: em vez de
+  construir um PDF novo do zero, `write_text_layer_pdf` agora abre o PRÓPRIO
+  PDF original via `pypdfium2` e insere objetos de texto invisíveis
+  (`FPDF_TEXTRENDERMODE_INVISIBLE`) diretamente nas páginas existentes —
+  preserva integralmente imagem, contagem, dimensões e rotação. Elimina
+  também o problema de Unicode: `FPDFText_SetText` aceita UTF-16 nativamente,
+  sem a codificação Latin-1 do gravador anterior. Evidência (nesta rodada):
+  `test_text_layer_preserves_visual_content_and_is_searchable` (renderiza
+  original e derivado e compara os pixels — extrema idêntico, não
+  branco; comparação pixel a pixel só a partir de R5-06) e
+  `test_unicode_text_round_trips` (travessão, aspas curvas, acentos
+  portugueses, round-trip via extração real).
+- **T5-03 (bloqueador)** — `_assert_coherent` agora compara toda a identidade
+  imutável da ingestão (título, `source_type`, editora, ano, edição, ISBN,
+  licença, e — via `Work` — título original, idioma e autores), não apenas
+  título/edição/ISBN. Evidência: `test_divergent_metadata_field_conflicts`
+  (parametrizado: authors, publisher, publication_year, license_status,
+  original_title) e `test_source_type_divergence_rejected`.
+- **T5-04 (bloqueador)** — `rag ocr` grava proveniência verificável
+  (`OcrProvenance`: hash de entrada, engine/versão parcial, contagem de
+  páginas) — nesta rodada, como sidecar `<output>.provenance.json`; a partir
+  da terceira rodada (R6-01), embutida dentro do próprio PDF (ver seção
+  correspondente mais abaixo). `rag ingest` valida a proveniência antes de
+  aceitar o `ocr_artifact`: hash de entrada deve bater com o original sendo
+  ingerido, e a contagem de páginas deve bater com o extraído. `generator`
+  do `DerivedArtifactRef` passa a registrar o engine/versão parcial (ex.:
+  `rapidocr:docling-2.123.1+rapidocr-backend=torch`, formato refinado em
+  R6-05), não mais a string fixa `"docling-ocr"`.
+  Evidência: `test_ocr_artifact_without_provenance_rejected`,
+  `test_ocr_artifact_from_different_original_rejected`,
+  `test_ocr_artifact_page_count_mismatch_rejected`.
+- **T5-05 (correção importante)** — adicionado um e2e opcional (gate
+  `RAG_OCR_E2E=1`, motor real `rapidocr`): varredura image-only → `rag ocr`
+  → verificação de imagem preservada e alinhamento de páginas da
+  proveniência. A fixture "scan" também deixou de ser uma página PDF vazia:
+  `make_scanned_pdf` desenha um retângulo (conteúdo visual real, sem texto).
+  Nesta rodada o teste ainda não provava reconhecimento real de texto nem
+  executava `rag ingest` — corrigido na segunda rodada (ver abaixo:
+  `make_scanned_pdf_with_text`, `test_real_engine_recognizes_text_and_preserves_image`,
+  `TestOcrRealEngineToIngestE2E`).
+- **T5-06 (correção importante)** — `docling_adapter.py`: item com múltiplas
+  entradas de proveniência agora é dividido em um bloco por página usando o
+  `charspan` de cada entrada; um `charspan` impreciso falha fechado em vez de
+  atribuir o texto inteiro à primeira página. Evidência:
+  `test_multi_page_provenance_splits_into_per_page_blocks`,
+  `test_multi_page_provenance_without_charspan_fails_closed`.
+- **T5-07 (correção importante)** — `_resolve_source` agora valida a
+  combinação extensão×`source_type` contra uma matriz fechada
+  (`.pdf` → `pdf_text`/`pdf_scan`; `.epub` → `epub`) nas DUAS direções, não
+  só a antiga (EPUB declarado `pdf_text`/`pdf_scan` era aceito). Evidência:
+  `TestExtensionSourceTypeMatrix` (as duas direções).
+- **T5-08 (correção importante)** — novo campo persistido
+  `Edition.extraction_warnings` (migration `0002`, coluna `jsonb`); `rag
+  ingest` grava os warnings da extração na edição; `rag inspect` os exibe.
+  Evidência: `test_extraction_warnings_roundtrip`,
+  `test_extraction_warnings_default_empty` (round-trip contra PostgreSQL
+  real).
+- **T5-09 (correção importante)** — política de rótulos explicitada e
+  fechada: `footnote`/`caption` viram parágrafos citáveis (não são mais
+  descartados); qualquer rótulo de `TextItem` não mapeado (ex.: `code`)
+  gera warning nomeado em vez de desaparecer silenciosamente. Evidência:
+  `test_footnote_and_caption_are_preserved_as_text`,
+  `test_unmapped_label_is_never_silently_dropped`.
+- **T5-10 (correção importante)** — logging do CLI trocado de
+  `KeyValueRenderer` para `JSONRenderer`; um processor dedicado
+  (`_redact_exception`) remove o traceback do log de console (mantém só
+  `error_type`) e só grava o traceback completo se `RAG_DEBUG_LOG` apontar
+  para um arquivo. Evidência: `TestRedactException` (remove segredo/caminho
+  do evento; grava traceback apenas quando configurado; é no-op sem
+  `exc_info`).
+
+Comandos reexecutados em 2026-08-29 após as correções:
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK |
+| `make lint` / `make format-check` / `make typecheck` | OK |
+| `make test` | OK — 223 unitários passed, 2 skipped (e2e docling e OCR opcionais), 1 frontend |
+| `make test-integration` | OK — 84 passed (PostgreSQL real via testcontainers) |
+| `make audit` | OK — nenhuma vulnerabilidade conhecida |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+
+Correção de evidência (apontada pela revisão): "persistência em transação
+única" vale apenas para o banco — os blobs do artifact store (original e
+derivado OCR) são gravados antes da transação relacional e podem ficar
+órfãos (mas nunca corrompidos) se a transação for abortada depois; órfãos
+são detectáveis por `audit()` do artifact store (T04). O teste de scan usado
+como evidência de AC-01/AC-02 agora exercita o próprio pipeline `rag ocr`
+(`ocr_pdf`), não um PDF de OCR montado à mão.
+
+### T05 — Segunda rodada de revisão (`docs/rag/REVIEW_T05_ROUND2.md`, R5-01 a R5-11)
+
+> **Nota (correção R6-06):** R5-04 (`publish_derivative_pair`, sidecar) e
+> R5-08 (`_engine_version`, campo `output_sha256`) descritos abaixo foram
+> SUBSTITUÍDOS na terceira rodada — ver seção seguinte. `publish_derivative_pair`
+> não existe mais; a proveniência vive embutida no PDF, sem `output_sha256`;
+> o campo passou a se chamar `adapter_version` (não `engine_version`).
+
+Resposta item a item na seção "Resposta à segunda revisão (ROUND2)" de
+`docs/rag/REVIEW_RESPONSE_T05.md`. Correções R5-01–R5-11 aplicadas:
+
+- **R5-01** (bloqueador) — `RapidOcrOptions(backend="torch")` explícito: o
+  padrão da lib (`onnxruntime`) nunca foi dependência do projeto. E2e real
+  reexecutado e verificado passando (`RAG_OCR_E2E=1`);
+- **R5-02** (bloqueador) — verificação de hashes do sidecar OCR movida para
+  antes de QUALQUER branch de retorno (dedup ou `--dry-run`); contagem de
+  páginas verificada logo após a extração, também antes do branch de dry-run;
+- **R5-03** (bloqueador) — reingestão de uma edição `pdf_scan` exige que o
+  `ocr_artifact` informado seja exatamente (mesmo sha256) um derivado já
+  registrado — trocar por outro derivado (mesmo com proveniência íntegra)
+  conflita;
+- **R5-04** (bloqueador) — `publish_derivative_pair`: PDF e sidecar são
+  construídos e gravados (com fsync) em temporários ANTES de qualquer
+  `os.replace`; falha em qualquer etapa de preparação não toca nenhum
+  caminho final — um par publicado anteriormente permanece íntegro;
+- **R5-05** — nova fixture `make_scanned_pdf_with_text` (Pillow, sem
+  dependência nova) rasteriza uma frase legível — o e2e agora prova
+  reconhecimento real (`report.lines > 0`, palavras esperadas no texto) e há
+  um e2e completo adicional que executa `rag ingest` de fato
+  (`TestOcrRealEngineToIngestE2E`);
+- **R5-06** — comparação de preservação visual trocada de extrema para
+  diferença pixel a pixel (`PIL.ImageChops.difference(...).getbbox() is
+  None`); novo teste com página rotacionada (`/Rotate 90`);
+- **R5-07** — `OcrPage.physical_index` (validado contra a posição na lista,
+  falha fechado se fora de ordem) e `OcrLine.width` (texto invisível ajustado
+  à largura detectada via transform corretivo, âncora na borda esquerda);
+  rotação já era preservada (mesma página reutilizada), faltava o teste;
+- **R5-08** — `_engine_version` anexa o `backend` resolvido quando a opção do
+  motor o expõe (hoje: RapidOCR) — `docling-2.123.1+rapidocr-backend=torch`
+  em vez de string genérica. Limitação documentada e justificada: `auto` não
+  é resolvido a um motor concreto (Docling não expõe isso publicamente) e
+  versões de binário/modelo por motor não são capturadas (fora de escopo
+  proporcional — os hashes de entrada/saída já garantem o objetivo central
+  do contrato de proveniência);
+- **R5-09** — `pypdfium2==5.13.0` declarado como dependência direta em
+  `pyproject.toml` (aprovado explicitamente pelo usuário nesta sessão);
+  lockfile resolvido sem mudança de versão;
+- **R5-10** — `logger_factory=structlog.PrintLoggerFactory(file=sys.stderr)`
+  explícito (confirmado por probe: stdout vazio, stderr com o JSON); debug
+  log criado com `os.open(..., 0o600)`, conteúdo passa por `_redact_secrets`
+  antes de gravar, e toda a gravação é melhor-esforço (`except OSError:
+  pass`) — nunca mascara a exceção original;
+- **R5-11** — `_spans_of` só recorta `item.orig` pelos índices do `charspan`
+  quando `len(item.orig) == len(item.text)` (alinhamento garantido); caso
+  contrário cai para o texto normalizado do próprio span, sem alegar
+  equivalência falsa.
+
+### T05 — Terceira rodada de revisão (`docs/rag/REVIEW_T05_ROUND3.md`, R6-01 a R6-06)
+
+Resposta item a item na seção "Resposta à terceira revisão (ROUND3)" de
+`docs/rag/REVIEW_RESPONSE_T05.md`. Correção R6-01–R6-06 aplicadas:
+
+- **R6-01** (bloqueador) — dois `os.replace()` consecutivos nunca são
+  atômicos em conjunto: uma falha entre os dois publicava PDF e sidecar de
+  gerações diferentes (reproduzido pela revisão). Redesenho: a proveniência
+  passou a ser embutida como ANEXO dentro do próprio PDF derivado
+  (`pdf_writer.embed_attachment`/`read_attachment`, via `PdfDocument.new_attachment`)
+  antes da ÚNICA gravação atômica (`publish_file`, temporário+fsync+rename).
+  Um único arquivo, uma única troca atômica — não existe mais um segundo
+  arquivo para dessincronizar. `OcrProvenance.output_sha256` foi removido
+  (não há mais nada com que ele pudesse divergir); `_verify_ocr_hashes` e
+  `_assert_coherent` passaram a comparar contra o sha256 computado na hora a
+  partir do arquivo. Evidência:
+  `test_rename_failure_does_not_destroy_previous_valid_file`,
+  `test_publish_failure_leaves_previous_file_intact` (nível `ocr_pdf`).
+- **R6-02** (correção importante) — RapidOCR (logger próprio, stdlib
+  `logging`) e a saída de `warnings.warn` do Torch escreviam caminhos
+  absolutos de arquivos de modelo diretamente em stderr, por fora do
+  structlog do CLI. `_harden_third_party_logging()` (chamada em
+  `DoclingOcrEngine.__init__`): filtro de `logging` que reescreve mensagens
+  do logger `RapidOCR` e do `logging.lastResort` reduzindo qualquer caminho
+  absoluto ao nome do arquivo; `warnings.showwarning` substituído por uma
+  versão que aplica a mesma redação. Evidência: reprodução independente do
+  relatório confirmada corrigida; novo teste de subprocesso
+  `test_real_engine_does_not_leak_absolute_paths_to_console` (stdout e
+  stderr capturados separadamente, `RAG_OCR_E2E=1`).
+- **R6-03** (correção importante) — quando o fallback de R5-11 ocorre
+  (`orig` desalinhado com `text`), `_to_canonical` agora conta essas
+  ocorrências e emite um warning explícito no `CanonicalDocument`
+  (`"N bloco(s) sem texto original preservável... (R6-03)"`) — a perda deixa
+  de ser silenciosa mesmo com o campo `original_text` preenchido. Evidência:
+  `test_multi_page_provenance_falls_back_when_orig_misaligned` (agora
+  também verifica o warning),
+  `test_multi_page_provenance_aligned_emits_no_fidelity_warning`.
+- **R6-04** (correção importante) — `OcrPage.width`/`height` eram aceitos
+  sem verificação contra a página real. `_check_geometry` (nova função em
+  `pdf_writer.py`) compara com tolerância de 1pt e falha fechado em
+  divergência; `FPDFPage_GenerateContent()` tem seu retorno verificado (era
+  ignorado); `_fit_width` passou a falhar fechado (antes retornava em
+  silêncio) se os limites do objeto de texto não puderem ser obtidos.
+  Evidência: `test_geometry_mismatch_rejected`,
+  `test_geometry_within_tolerance_accepted`. Alinhamento pixel-perfeito de
+  seleção permanece para quando o leitor (T17) existir — a checagem aqui é
+  a coerência geométrica básica do artefato, que é escopo de T05.
+- **R6-05** (correção importante) — **aprovado explicitamente pelo usuário**:
+  campo renomeado de `engine_version` para `adapter_version`, com docstring
+  deixando claro o escopo parcial (versão do Docling + nome do motor +
+  backend resolvido quando exposto; NÃO resolve `auto`, versão de binário
+  do Tesseract, ou hash de modelo do RapidOCR/ocrmac). Registrado como
+  limitação aceita, não fixada silenciosamente — ver NOTES.md §10.5.
+- **R6-06** (correção importante) — `EVIDENCE.md`: seções históricas da
+  primeira e segunda rodadas marcadas com nota explícita apontando o que foi
+  substituído (sidecar/`output_sha256`/`_render_extrema`/`publish_derivative_pair`/
+  `engine_version`), em vez de deixar afirmações contraditórias sem
+  indicação de qual é a atual.
+
+Gates reexecutados em 2026-08-29 após as correções R6-01–R6-06:
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK |
+| `make lint` / `make format-check` / `make typecheck` | OK |
+| `make test` | OK — 233 unitários passed, 3 skipped (e2e opcionais); 1 frontend |
+| `make test-integration` | OK — 90 passed, 1 skipped (e2e opcional) |
+| `make audit` | OK — nenhuma vulnerabilidade conhecida |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+| `RAG_OCR_E2E=1` (unit: 2 e2e reais + subprocesso R6-02) | OK — 2 passed |
+| `RAG_OCR_E2E=1` (integration: e2e completo até `rag ingest`) | OK — 1 passed |
+
+Comandos reexecutados em 2026-08-29 após as correções:
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK |
+| `make lint` / `make format-check` / `make typecheck` | OK |
+| `make test` | OK — 233 unitários passed, 2 skipped (e2e opcionais), 1 frontend |
+| `make test-integration` | OK — 90 passed, 1 skipped (e2e opcional) |
+| `make audit` | OK — nenhuma vulnerabilidade conhecida |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+| `RAG_OCR_E2E=1` (unit + integration) | OK — 2 passed (motor real rapidocr/torch, até `rag ingest`) |
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

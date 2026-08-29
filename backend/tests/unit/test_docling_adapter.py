@@ -97,6 +97,99 @@ class TestMapping:
         with pytest.raises(IngestionError, match="inesperado"):
             _to_canonical(object(), SourceType.PDF_TEXT)
 
+    def test_footnote_and_caption_are_preserved_as_text(self) -> None:
+        """T5-09: notas de rodapé e legendas são texto citável, não mobília."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        doc.add_text(DocItemLabel.FOOTNOTE, "Nota de rodapé relevante.", prov=_prov(1))
+        doc.add_text(DocItemLabel.CAPTION, "Legenda da figura.", prov=_prov(1))
+        canonical = _to_canonical(doc, SourceType.PDF_TEXT)
+        assert any(b.text == "Nota de rodapé relevante." for b in canonical.blocks)
+        assert any(b.text == "Legenda da figura." for b in canonical.blocks)
+
+    def test_unmapped_label_is_never_silently_dropped(self) -> None:
+        """T5-09: rótulo de TextItem não mapeado é preservado como warning."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        doc.add_code("print(1)", prov=_prov(1))
+        canonical = _to_canonical(doc, SourceType.PDF_TEXT)
+        assert not any("print(1)" in b.text for b in canonical.blocks)
+        assert any("code" in w and "rótulo" in w for w in canonical.warnings)
+
+    def test_multi_page_provenance_splits_into_per_page_blocks(self) -> None:
+        """T5-06: item com prov em duas páginas vira um bloco por página,
+        cada um com o trecho exato indicado pelo charspan."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        item = doc.add_text(DocItemLabel.TEXT, "PARTE UM PARTE DOIS", prov=_prov(1, 0, 8))
+        item.prov.append(_prov(2, 9, 19))
+        canonical = _to_canonical(doc, SourceType.PDF_TEXT)
+        texts_by_page = {
+            b.page_index: b.text for b in canonical.blocks if b.text.startswith("PARTE")
+        }
+        assert texts_by_page == {0: "PARTE UM", 1: "PARTE DOIS"}
+
+    def test_multi_page_provenance_preserves_original_when_aligned(self) -> None:
+        """R5-11: quando `orig` tem o mesmo comprimento de `text`, cada span
+        preserva o trecho ORIGINAL correspondente (não apenas o normalizado)."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        item = doc.add_text(
+            DocItemLabel.TEXT,
+            "PARTE UM PARTE DOIS",
+            orig="parte um parte dois",
+            prov=_prov(1, 0, 8),
+        )
+        item.prov.append(_prov(2, 9, 19))
+        canonical = _to_canonical(doc, SourceType.PDF_TEXT)
+        originals_by_page = {
+            b.page_index: b.original_text for b in canonical.blocks if b.text.startswith("PARTE")
+        }
+        assert originals_by_page == {0: "parte um", 1: "parte dois"}
+
+    def test_multi_page_provenance_falls_back_when_orig_misaligned(self) -> None:
+        """R5-11/R6-03: se `orig` não tem o mesmo comprimento de `text`, não
+        recorta `orig` (evitaria um trecho errado) — cai para o texto
+        normalizado do próprio span, nunca afirmando uma equivalência falsa,
+        E registra a perda como warning (nunca em silêncio)."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        item = doc.add_text(
+            DocItemLabel.TEXT,
+            "PARTE UM PARTE DOIS",
+            orig="orig de comprimento totalmente diferente",
+            prov=_prov(1, 0, 8),
+        )
+        item.prov.append(_prov(2, 9, 19))
+        canonical = _to_canonical(doc, SourceType.PDF_TEXT)
+        blocks = [b for b in canonical.blocks if b.text.startswith("PARTE")]
+        assert {b.page_index: b.original_text for b in blocks} == {0: "PARTE UM", 1: "PARTE DOIS"}
+        assert any("original" in w and "R6-03" in w for w in canonical.warnings)
+
+    def test_multi_page_provenance_aligned_emits_no_fidelity_warning(self) -> None:
+        """R6-03: quando o alinhamento É possível, nenhum warning de perda de
+        original é emitido — o warning é específico ao caso de fallback."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        item = doc.add_text(
+            DocItemLabel.TEXT,
+            "PARTE UM PARTE DOIS",
+            orig="parte um parte dois",
+            prov=_prov(1, 0, 8),
+        )
+        item.prov.append(_prov(2, 9, 19))
+        canonical = _to_canonical(doc, SourceType.PDF_TEXT)
+        assert not any("R6-03" in w for w in canonical.warnings)
+
+    def test_multi_page_provenance_without_charspan_fails_closed(self) -> None:
+        """T5-06: sem charspan preciso, não arrisca atribuir texto à página errada."""
+        doc = DoclingDocument(name="livro")
+        doc.add_heading("Capítulo I", level=1, prov=_prov(1))
+        item = doc.add_text(DocItemLabel.TEXT, "PARTE UM PARTE DOIS", prov=_prov(1, 0, 0))
+        item.prov.append(_prov(2, 0, 0))
+        with pytest.raises(IngestionError, match="charspan"):
+            _to_canonical(doc, SourceType.PDF_TEXT)
+
 
 class TestRealConversions:
     def test_epub_end_to_end(self, tmp_path: Path) -> None:

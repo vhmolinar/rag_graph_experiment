@@ -69,6 +69,7 @@ def _edition(
     source_type: SourceType = SourceType.PDF_TEXT,
     edition_label: str | None = None,
     derived_artifacts: list[DerivedArtifactRef] | None = None,
+    extraction_warnings: tuple[str, ...] = (),
 ) -> Edition:
     return Edition(
         work_id=work_id,
@@ -77,6 +78,7 @@ def _edition(
         source_sha256=sha256,
         edition_label=edition_label,
         derived_artifacts=derived_artifacts or [],
+        extraction_warnings=extraction_warnings,
     )
 
 
@@ -175,6 +177,30 @@ class TestWorksAndEditions:
             loaded = await repo.get(edition.id)
         assert loaded is not None
         assert loaded.ingestion_status is IngestionStatus.EXTRACTED
+
+    async def test_extraction_warnings_roundtrip(self, db: Database) -> None:
+        """T5-08: warnings de extração persistem e ficam disponíveis a
+        `rag inspect` depois que o processo de ingestão termina."""
+        work = await _work(db)
+        warnings = ("1 tabela(s) ignorada(s): conteúdo não textual fora da fase 1",)
+        async with db.connection() as conn:
+            repo = EditionsRepository(conn)
+            edition = await repo.create(_edition(work.id, extraction_warnings=warnings))
+            loaded = await repo.get(edition.id)
+            by_hash = await repo.get_by_source_hash(HASH_A)
+        assert loaded is not None
+        assert loaded.extraction_warnings == warnings
+        assert by_hash is not None
+        assert by_hash.extraction_warnings == warnings
+
+    async def test_extraction_warnings_default_empty(self, db: Database) -> None:
+        work = await _work(db)
+        async with db.connection() as conn:
+            repo = EditionsRepository(conn)
+            edition = await repo.create(_edition(work.id))
+            loaded = await repo.get(edition.id)
+        assert loaded is not None
+        assert loaded.extraction_warnings == ()
 
     async def test_get_by_source_hash(self, db: Database) -> None:
         """R11: caminho de idempotência da ingestão — create → lookup → mesmo ID."""

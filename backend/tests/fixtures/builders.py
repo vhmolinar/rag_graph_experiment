@@ -68,6 +68,92 @@ def make_text_pdf(pages: list[list[str]]) -> bytes:
     return header + body + xref.encode() + trailer.encode()
 
 
+def make_scanned_pdf(
+    page_count: int, *, width: float = 612.0, height: float = 792.0, rotation: int = 0
+) -> bytes:
+    """PDF "escaneado" mínimo: páginas com conteúdo visual (retângulo) e
+    NENHUM texto — simula uma varredura image-only para testar que o
+    derivado OCR preserva o conteúdo visual do original (T5-01).
+
+    O retângulo é deliberadamente pequeno (não cobre a página inteira):
+    um retângulo dominando toda a página faz o modelo de layout do Docling
+    classificar a página inteira como uma única figura e descartar a camada
+    de texto invisível sobreposta a ela — um artefato do modelo, não do
+    contrato sendo testado. Um retângulo modesto (como uma foto/gráfico numa
+    página majoritariamente clara) preserva conteúdo visual verificável por
+    render sem esse efeito colateral.
+
+    `rotation` (0/90/180/270) grava `/Rotate` na página — usado para provar
+    que o derivado OCR preserva a rotação do original (correção R5-06).
+
+    Usa pypdfium2 (dependência direta desde a correção R5-09) em vez de
+    bytes PDF manuais porque o conteúdo visual precisa ser verificável por
+    render, não apenas por extração de texto.
+    """
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_raw
+
+    rect_width, rect_height = width * 0.25, height * 0.15
+    x0 = (width - rect_width) / 2
+    y0 = height - rect_height - 100
+
+    document = pdfium.PdfDocument.new()
+    try:
+        for _ in range(page_count):
+            page = document.new_page(width, height)
+            rect = pdfium_raw.FPDFPageObj_CreateNewRect(x0, y0, rect_width, rect_height)
+            pdfium_raw.FPDFPageObj_SetFillColor(rect, 20, 20, 20, 255)
+            pdfium_raw.FPDFPath_SetDrawMode(rect, pdfium_raw.FPDF_FILLMODE_ALTERNATE, 0)
+            pdfium_raw.FPDFPage_InsertObject(page, rect)
+            if rotation:
+                page.set_rotation(rotation)
+            pdfium_raw.FPDFPage_GenerateContent(page)
+            page.close()
+        buffer = io.BytesIO()
+        document.save(buffer)
+    finally:
+        document.close()
+    return buffer.getvalue()
+
+
+def make_scanned_pdf_with_text(
+    phrase: str, *, width: float = 900.0, height: float = 300.0, font_size: int = 48
+) -> bytes:
+    """PDF "escaneado" com UMA página raster (imagem) contendo `phrase`
+    desenhada como pixels — sem camada de texto alguma. Usado para o e2e de
+    OCR real (correção R5-05): sem uma imagem com texto legível, nenhum
+    motor de OCR reconhece nada, e o teste "e2e" passaria vazio.
+
+    Usa Pillow (`ImageFont.load_default(size=...)`, fonte TrueType embutida
+    desde Pillow >=10.1 — nenhuma dependência nova) para rasterizar o texto,
+    e `pypdfium2.PdfBitmap.from_pil` para inserir a imagem como objeto de
+    página.
+    """
+    import pypdfium2 as pdfium
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (int(width), int(height)), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=font_size)
+    draw.text((width * 0.05, height * 0.35), phrase, fill="black", font=font)
+
+    document = pdfium.PdfDocument.new()
+    try:
+        page = document.new_page(width, height)
+        bitmap = pdfium.PdfBitmap.from_pil(image)
+        image_obj = pdfium.PdfImage.new(document)
+        image_obj.set_bitmap(bitmap)
+        image_obj.set_matrix(pdfium.PdfMatrix(width, 0, 0, height, 0, 0))
+        page.insert_obj(image_obj)
+        page.gen_content()
+        page.close()
+        buffer = io.BytesIO()
+        document.save(buffer)
+    finally:
+        document.close()
+    return buffer.getvalue()
+
+
 def make_epub(chapters: list[tuple[str, list[str]]]) -> bytes:
     """EPUB 3 mínimo: cada capítulo é (título, [parágrafos])."""
     manifest_items = []

@@ -20,10 +20,12 @@ from rag.cli.main import create_app
 
 class StubEngine:
     name = "stub"
+    version = "stub-0"
 
     def recognize(self, pdf_path: Path) -> list[OcrPage]:
         return [
             OcrPage(
+                physical_index=0,
                 width=612.0,
                 height=792.0,
                 lines=(OcrLine(text="Texto stub.", x=72.0, y=700.0, height=12.0),),
@@ -99,3 +101,40 @@ class TestIngestCommandValidation:
         )
         assert result.exit_code == 1
         assert "metadados" in result.output
+
+
+class TestRedactException:
+    """T5-10: console nunca recebe traceback; JSON substitui key-value."""
+
+    def test_removes_traceback_keeps_error_type(self) -> None:
+        from rag.cli.main import _redact_exception
+
+        try:
+            raise RuntimeError("caminho sensível: /Users/alguem/segredo.txt")
+        except RuntimeError:
+            event = _redact_exception(
+                None, "error", {"event": "ingest.unexpected_error", "exc_info": True}
+            )
+        assert event["error_type"] == "RuntimeError"
+        assert "exc_info" not in event
+        assert "segredo" not in str(event)
+        assert "Traceback" not in str(event)
+
+    def test_writes_traceback_to_debug_log_when_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from rag.cli.main import _redact_exception
+
+        debug_file = tmp_path / "debug.log"
+        monkeypatch.setenv("RAG_DEBUG_LOG", str(debug_file))
+        try:
+            raise RuntimeError("segredo-interno-do-traceback")
+        except RuntimeError:
+            _redact_exception(None, "error", {"event": "x", "exc_info": True})
+        assert "segredo-interno-do-traceback" in debug_file.read_text(encoding="utf-8")
+
+    def test_no_exc_info_is_a_noop(self) -> None:
+        from rag.cli.main import _redact_exception
+
+        event = {"event": "ingest.started", "file": "a.pdf"}
+        assert _redact_exception(None, "info", dict(event)) == event

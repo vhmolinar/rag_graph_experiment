@@ -11,6 +11,9 @@ dependencies = [
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
     "pyyaml==6.0.3",
+    # já transitiva via docling; declarada em T05 (correção R5-09) porque
+    # adapters/pdf_writer.py (produção) importa a API diretamente.
+    "pypdfium2==5.13.0",
     "structlog==26.1.0",
     # typer fixado em 0.26.8 (maior estável <0.27.0): docling 2.123.1 exige
     # typer <0.27.0 — desvio aprovado em NOTES.md §10.1 item 4a.

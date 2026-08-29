@@ -71,6 +71,7 @@ class Edition(BaseModel):
     license_status: LicenseStatus = LicenseStatus.UNKNOWN
     ingestion_status: IngestionStatus = IngestionStatus.PENDING
     derived_artifacts: list[DerivedArtifactRef] = Field(default_factory=list)
+    extraction_warnings: tuple[str, ...] = Field(default_factory=tuple)
     id: UUID = Field(default_factory=uuid4)
     created_at: AwareDatetime = Field(default_factory=utcnow)
 

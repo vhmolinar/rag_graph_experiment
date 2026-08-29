@@ -3,17 +3,28 @@
 Contratos:
 - `--dry-run` valida arquivo, metadados, idioma e duplicidade sem persistir;
 - falhas retornam código != 0 (1: erro de domínio; 2: erro inesperado);
-- logs estruturados (structlog) em stderr, sem conteúdo do livro e sem
-  caminhos absolutos — apenas nomes de arquivo e ids;
+- logs estruturados JSON (structlog) em stderr (fábrica explícita — nunca
+  stdout), sem conteúdo do livro e sem caminhos absolutos ou stack traces —
+  apenas nomes de arquivo, ids e `error_type` (T5-10). O traceback completo
+  só é gravado se `RAG_DEBUG_LOG` apontar para um arquivo: destino restrito
+  (0600), com segredos comuns redigidos e nunca propagando falha própria
+  (correção R5-10 — configuração de debug não suspende a regra de redigir
+  segredos, nem pode mascarar a exceção original se o próprio sink falhar);
 - reexecução com os mesmos inputs é idempotente (AC-01).
 
 Configuração por ambiente: POSTGRES_* (banco) e ARTIFACT_* (armazenamento).
 """
 
 import asyncio
-from collections.abc import Callable
+import io
+import os
+import re
+import sys
+import traceback
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
-from typing import Annotated
+from types import TracebackType
+from typing import Annotated, Any
 from uuid import UUID
 
 import structlog
@@ -30,15 +41,80 @@ from rag.infrastructure.repositories.content import PagesRepository, SectionsRep
 from rag.infrastructure.repositories.editions import EditionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
 
+_DEBUG_LOG_ENV = "RAG_DEBUG_LOG"
+
+# Redação best-effort de segredos comuns no traceback de debug — configuração
+# de debug não é licença para vazar credenciais (correção R5-10).
+_KV_SECRET = re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)\b(\s*[=:]\s*)(\S+)")
+_AUTH_HEADER = re.compile(r"(?i)\b(authorization)\s*:\s*(\S+)")
+
+
+def _redact_secrets(text: str) -> str:
+    text = _KV_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}***REDACTED***", text)
+    return _AUTH_HEADER.sub(lambda m: f"{m.group(1)}: ***REDACTED***", text)
+
+
+def _write_debug_log(
+    debug_path: str,
+    event_name: str,
+    exc_type: type[BaseException],
+    exc_value: BaseException | None,
+    tb: TracebackType | None,
+) -> None:
+    """Grava o traceback completo em `debug_path`. Melhor esforço: qualquer
+    falha aqui (permissão, disco cheio, caminho inválido) é engolida — o
+    sink de debug nunca pode mascarar a exceção original sendo logada.
+
+    Arquivo criado com permissão restrita (0600, via `os.open` — não depende
+    do umask do processo) e o conteúdo passa pela mesma redação de segredos
+    comuns aplicada a qualquer outro log (correção R5-10).
+    """
+    try:
+        tb_text = io.StringIO()
+        traceback.print_exception(exc_type, exc_value, tb, file=tb_text)
+        content = _redact_secrets(f"=== {event_name} ===\n{tb_text.getvalue()}")
+        fd = os.open(debug_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(content)
+    except OSError:
+        pass
+
+
+def _redact_exception(
+    _logger: Any,  # noqa: ANN401 -- assinatura de Processor do structlog
+    _name: str,
+    event_dict: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """Remove o traceback do log de console; opcionalmente grava-o à parte.
+
+    `log.exception()`/`log.error(..., exc_info=True)` marcam `exc_info` no
+    event dict. O console nunca recebe o traceback (que pode conter
+    caminhos absolutos e trechos de código) — apenas `error_type`. O
+    traceback completo só é escrito em `RAG_DEBUG_LOG`, quando configurado.
+    """
+    exc_info = event_dict.pop("exc_info", None)
+    if not exc_info:
+        return event_dict
+    if exc_info is True:
+        exc_type, exc_value, tb = sys.exc_info()
+    else:
+        exc_type, exc_value, tb = exc_info
+    event_dict["error_type"] = exc_type.__name__ if exc_type is not None else "desconhecido"
+    debug_path = os.environ.get(_DEBUG_LOG_ENV)
+    if debug_path and exc_type is not None:
+        _write_debug_log(debug_path, str(event_dict.get("event", "")), exc_type, exc_value, tb)
+    return event_dict
+
 
 def _configure_logging() -> None:
     structlog.configure(
         processors=[
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.format_exc_info,
-            structlog.processors.KeyValueRenderer(),
+            _redact_exception,
+            structlog.processors.JSONRenderer(),
         ],
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
     )
 
 
@@ -101,6 +177,8 @@ async def _inspect_async(edition_id: UUID) -> int:
     typer.echo(f"  seções: {len(sections)}  páginas: {len(pages)}")
     for derived in edition.derived_artifacts:
         typer.echo(f"  derivado[{derived.kind}]: {derived.sha256} via {derived.generator}")
+    for warning in edition.extraction_warnings:
+        typer.echo(f"  aviso: {warning}")
     return 0
 
 

@@ -6,10 +6,19 @@ docling/docling_core. Todo o restante consome `CanonicalDocument`.
 Decisões de mapeamento:
 - `title` e `section_header` viram headings; nível = profundidade na árvore do
   Docling, normalizada para começar em 0;
-- `text` e `list_item` viram parágrafos na seção vigente;
+- `text`, `list_item`, `footnote` e `caption` viram parágrafos na seção
+  vigente — são texto citável de livro, não mobília de página (T5-09);
 - `page_header`/`page_footer` são descartados (mobília de página);
-- tabelas, figuras, fórmulas, notas e legendas são ignoradas com warning —
-  a fase 1 é textual (SPEC: sem RAG multimodal);
+- tabelas, figuras, fórmulas e gráficos são ignorados com warning — a fase 1
+  é textual (SPEC: sem RAG multimodal);
+- qualquer outro rótulo de `TextItem` não mapeado explicitamente acima (ex.:
+  `code`, `reference`) também é ignorado, mas SEMPRE com warning — nenhuma
+  perda de conteúdo é silenciosa (T5-09);
+- um item com proveniência em múltiplas páginas (`prov` com mais de uma
+  entrada) é dividido em um bloco por página usando `charspan`; se o
+  `charspan` de algum span não permitir recompor exatamente o trecho, a
+  extração falha fechado em vez de arriscar atribuir texto à página errada
+  (T5-06);
 - texto da página é a concatenação dos blocos normalizados em ordem de
   leitura; offsets do bloco referem-se a esse texto, garantindo que o trecho
   se recompõe exatamente (AC-03);
@@ -35,14 +44,17 @@ from rag.domain.enums import SourceType
 from rag.domain.errors import IngestionError
 
 _HEADING_LABELS = {DocItemLabel.TITLE, DocItemLabel.SECTION_HEADER}
-_PARAGRAPH_LABELS = {DocItemLabel.TEXT, DocItemLabel.LIST_ITEM}
+_PARAGRAPH_LABELS = {
+    DocItemLabel.TEXT,
+    DocItemLabel.LIST_ITEM,
+    DocItemLabel.FOOTNOTE,
+    DocItemLabel.CAPTION,
+}
 _FURNITURE_LABELS = {DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER}
 _SKIPPED_WITH_WARNING = {
     DocItemLabel.TABLE: "tabela",
     DocItemLabel.PICTURE: "figura",
     DocItemLabel.FORMULA: "fórmula",
-    DocItemLabel.FOOTNOTE: "nota de rodapé",
-    DocItemLabel.CAPTION: "legenda",
     DocItemLabel.CHART: "gráfico",
 }
 
@@ -51,6 +63,55 @@ _FORMATS = {SourceType.PDF_TEXT: InputFormat.PDF, SourceType.EPUB: InputFormat.E
 
 def _normalize(text: str) -> str:
     return " ".join(text.split())
+
+
+def _spans_of(item: TextItem, label: object) -> list[tuple[int | None, str, str, bool]]:
+    """Deriva (page_index, texto, original, original_e_fiel) por proveniência
+    do item (T5-06).
+
+    Sem `prov` (EPUB): uma posição sem página. Um único `prov`: o item
+    inteiro na página indicada — comportamento anterior, preservado. Mais de
+    um `prov` (item com conteúdo em múltiplas páginas): cada entrada PRECISA
+    trazer um `charspan` que recorte exatamente sua parte de `item.text`;
+    sem isso, mapear tudo para a primeira página arriscaria atribuir texto à
+    página errada, então a extração falha fechado.
+
+    `original_e_fiel` é `False` quando `original` NÃO é o texto original de
+    fato (caiu para o texto normalizado por falta de alinhamento) — o
+    chamador deve registrar isso como warning, nunca aceitar em silêncio
+    (correção R6-03: um campo chamado `original_text` não pode conter texto
+    normalizado sem que a perda seja registrada em algum lugar).
+    """
+    original_full = item.orig if item.orig and item.orig.strip() else item.text
+    if not item.prov:
+        return [(None, item.text, original_full, True)]
+    if len(item.prov) == 1:
+        return [(item.prov[0].page_no - 1, item.text, original_full, True)]
+    spans: list[tuple[int | None, str, str, bool]] = []
+    for prov in item.prov:
+        charspan = getattr(prov, "charspan", None)
+        if (
+            not charspan
+            or len(charspan) != 2
+            or charspan[1] <= charspan[0]
+            or charspan[1] > len(item.text)
+        ):
+            raise IngestionError(
+                "Item com proveniência em múltiplas páginas sem charspan preciso; não é "
+                "possível mapear o texto para a página correta com exatidão (AC-03).",
+                context={"label": str(label)},
+            )
+        start, end = charspan
+        segment = item.text[start:end]
+        # `charspan` refere-se a `item.text`. `item.orig` só pode ser
+        # recortado pelos mesmos índices quando tem exatamente o mesmo
+        # comprimento (alinhamento 1:1 garantido); do contrário, recortar
+        # `orig` pelos índices de `text` produziria um trecho errado, e
+        # cair para o texto normalizado é registrado como perda (R5-11/R6-03).
+        aligned = bool(item.orig) and len(item.orig) == len(item.text)
+        original_segment = item.orig[start:end] if aligned else segment
+        spans.append((prov.page_no - 1, segment, original_segment, aligned))
+    return spans
 
 
 class DoclingExtractor:
@@ -93,7 +154,9 @@ def _to_canonical(doc: object, source_type: SourceType) -> CanonicalDocument:
     headings: list[tuple[int, str]] = []  # pilha de (nível, título) vigente
     raw_blocks: list[tuple[BlockKind, int, str, str, tuple[str, ...], int | None]] = []
     skipped: dict[str, int] = {}
+    unmapped: dict[str, int] = {}
     heading_levels: set[int] = set()
+    original_not_preserved = 0
 
     for item, _depth in doc.iterate_items():
         label = getattr(item, "label", None)
@@ -101,43 +164,70 @@ def _to_canonical(doc: object, source_type: SourceType) -> CanonicalDocument:
             name = _SKIPPED_WITH_WARNING[label]
             skipped[name] = skipped.get(name, 0) + 1
             continue
-        if not isinstance(item, TextItem):
-            continue
         if label in _FURNITURE_LABELS:
             continue
+        if not isinstance(item, TextItem):
+            # Item não textual sem política explícita (ex.: form/key-value): nunca
+            # descartado silenciosamente (T5-09).
+            name = str(label) if label is not None else type(item).__name__
+            unmapped[name] = unmapped.get(name, 0) + 1
+            continue
         if label not in _HEADING_LABELS and label not in _PARAGRAPH_LABELS:
+            name = str(label) if label is not None else "desconhecido"
+            unmapped[name] = unmapped.get(name, 0) + 1
             continue
-        text = _normalize(item.text)
-        if not text:
-            continue
-        original = item.orig if item.orig and item.orig.strip() else item.text
-        page_index = item.prov[0].page_no - 1 if item.prov else None
 
-        if label in _HEADING_LABELS:
-            # Nível hierárquico vem do próprio item (1-based no Docling);
-            # title equivale ao nível mais alto.
-            hlevel = item.level if isinstance(item, SectionHeaderItem) else 1
-            heading_levels.add(hlevel)
-            while headings and headings[-1][0] >= hlevel:
-                headings.pop()
-            headings.append((hlevel, text))
-            raw_blocks.append(
-                (
-                    BlockKind.HEADING,
-                    hlevel,
-                    text,
-                    original,
-                    tuple(t for _, t in headings),
-                    page_index,
+        for page_index, raw_text, raw_original, original_faithful in _spans_of(item, label):
+            text = _normalize(raw_text)
+            if not text:
+                continue
+            original = raw_original if raw_original and raw_original.strip() else raw_text
+            if not original_faithful:
+                original_not_preserved += 1
+
+            if label in _HEADING_LABELS:
+                # Nível hierárquico vem do próprio item (1-based no Docling);
+                # title equivale ao nível mais alto.
+                hlevel = item.level if isinstance(item, SectionHeaderItem) else 1
+                heading_levels.add(hlevel)
+                while headings and headings[-1][0] >= hlevel:
+                    headings.pop()
+                headings.append((hlevel, text))
+                raw_blocks.append(
+                    (
+                        BlockKind.HEADING,
+                        hlevel,
+                        text,
+                        original,
+                        tuple(t for _, t in headings),
+                        page_index,
+                    )
                 )
-            )
-        else:
-            raw_blocks.append(
-                (BlockKind.PARAGRAPH, 0, text, original, tuple(t for _, t in headings), page_index)
-            )
+            else:
+                raw_blocks.append(
+                    (
+                        BlockKind.PARAGRAPH,
+                        0,
+                        text,
+                        original,
+                        tuple(t for _, t in headings),
+                        page_index,
+                    )
+                )
 
     for name, count in sorted(skipped.items()):
         warnings.append(f"{count} {name}(s) ignorada(s): conteúdo não textual fora da fase 1")
+    for name, count in sorted(unmapped.items()):
+        warnings.append(
+            f"{count} item(ns) de rótulo '{name}' ignorado(s): rótulo não mapeado na fase 1"
+        )
+    if original_not_preserved:
+        warnings.append(
+            f"{original_not_preserved} bloco(s) sem texto original preservável: item com "
+            "proveniência em múltiplas páginas e sem alinhamento exato entre texto normalizado "
+            "e original — original_text contém o texto normalizado, não o original de fato "
+            "(R6-03)"
+        )
 
     if not raw_blocks:
         raise IngestionError(
