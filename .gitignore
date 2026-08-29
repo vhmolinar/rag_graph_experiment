@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# --- Ambiente e segredos ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+
+# --- Acervo e artefatos (nunca versionar livros ou binários) ---
+artifacts/
+books/
+*.pdf
+*.epub
+!backend/tests/fixtures/*.pdf
+!backend/tests/fixtures/*.epub
+!evaluation/fixtures/*.pdf
+!evaluation/fixtures/*.epub
+
+# --- Estado local ---
+*.db
+*.sqlite3
+.docker-data/
+
+# --- SO ---
+.DS_Store
