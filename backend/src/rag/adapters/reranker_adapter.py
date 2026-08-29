@@ -1,13 +1,18 @@
-"""Adapter HTTP de embeddings compatível com OpenAI (T06, enriquecido em T07).
+"""Adapter HTTP de reranking (SPEC §11, T07).
 
-Cliente mínimo: `POST {base_url}/embeddings`, autenticação Bearer via
-variável de ambiente ou secret file. Retries transitórios, circuit breaker
-e limite de concorrência vêm de `rag.adapters.resilience` (T07,
-NOTES.md §10.6 item 6): este módulo continua sendo o único adapter de
-embeddings, apenas enriquecido, não substituído. Validação de dimensão
-contra a `EmbeddingVersion` registrada acontece na camada de persistência
-(`PassagesRepository`), não aqui — este módulo só valida que a resposta do
-endpoint é internamente consistente.
+Não existe convenção "compatível com OpenAI" para reranking (a API da
+OpenAI não tem esse endpoint). Contrato explícito adotado — desvio
+documentado em NOTES.md §10.8, seguindo a convenção difundida entre
+servidores de reranking auto-hospedados (Cohere, Text Embeddings
+Inference, Infinity):
+
+    POST {base_url}/rerank
+    {"model": ..., "query": ..., "documents": [...]}
+    -> {"results": [{"index": int, "relevance_score": float}, ...]}
+
+`rerank()` devolve as pontuações na MESMA ordem de `documents` (contrato
+`RerankerProvider`, SPEC §11) — este módulo reordena a resposta por
+`index`, não expõe a ordem de relevância do servidor.
 """
 
 import asyncio
@@ -27,17 +32,17 @@ from rag.domain.errors import (
 _DEFAULT_RETRY_AFTER_SECONDS = 60
 
 
-class EmbeddingEndpointSettings(ModelAuthSettings, ResilienceSettings):
-    """Configuração do endpoint de embeddings (SPEC: compatível com OpenAI)."""
+class RerankerEndpointSettings(ModelAuthSettings, ResilienceSettings):
+    """Configuração do endpoint de reranking (contrato explícito, não OpenAI)."""
 
-    model_config = SettingsConfigDict(env_prefix="EMBEDDING_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="RERANKER_", extra="ignore")
 
-    base_url: str = "http://localhost:8080/v1"
-    model: str = "qwen3-embedding"
+    base_url: str = "http://localhost:8002"
+    model: str = "qwen3-reranker"
     timeout_seconds: float = 30.0
 
 
-def _headers(settings: EmbeddingEndpointSettings) -> dict[str, str]:
+def _headers(settings: RerankerEndpointSettings) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     key = settings.api_key.get_secret_value()
     if key:
@@ -45,13 +50,12 @@ def _headers(settings: EmbeddingEndpointSettings) -> dict[str, str]:
     return headers
 
 
-class OpenAiCompatibleEmbeddingProvider:
-    """Implementa `rag.domain.providers.EmbeddingProvider` via um endpoint
-    HTTP compatível com OpenAI (`POST /embeddings`)."""
+class HttpRerankerProvider:
+    """Implementa `rag.domain.providers.RerankerProvider` via `POST /rerank`."""
 
     def __init__(
         self,
-        settings: EmbeddingEndpointSettings,
+        settings: RerankerEndpointSettings,
         *,
         client: httpx.AsyncClient | None = None,
         sleep: SleepFn | None = None,
@@ -74,12 +78,12 @@ class OpenAiCompatibleEmbeddingProvider:
         if self._owns_client:
             await self._client.aclose()
 
-    async def _embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
+    async def rerank(self, query: str, documents: list[str]) -> list[float]:
+        if not documents:
             return []
         return await call_with_resilience(
-            lambda: self._embed_once(texts),
-            operation_name="embedding.embed",
+            lambda: self._rerank_once(query, documents),
+            operation_name="reranker.rerank",
             breaker=self._breaker,
             semaphore=self._semaphore,
             max_retries=self._settings.max_retries,
@@ -88,10 +92,11 @@ class OpenAiCompatibleEmbeddingProvider:
             **self._sleep_kwargs,
         )
 
-    async def _embed_once(self, texts: list[str]) -> list[list[float]]:
+    async def _rerank_once(self, query: str, documents: list[str]) -> list[float]:
         try:
             response = await self._client.post(
-                "/embeddings", json={"model": self._settings.model, "input": texts}
+                "/rerank",
+                json={"model": self._settings.model, "query": query, "documents": documents},
             )
         except httpx.TimeoutException as exc:
             raise ModelTimeoutError(cause=exc) from exc
@@ -116,29 +121,20 @@ class OpenAiCompatibleEmbeddingProvider:
 
         try:
             payload = response.json()
-            embeddings = [[float(v) for v in item["embedding"]] for item in payload["data"]]
+            results = payload["results"]
+            by_index = {int(item["index"]): float(item["relevance_score"]) for item in results}
         except (ValueError, KeyError, TypeError) as exc:
             raise ModelResponseError(
-                "Resposta do endpoint de embeddings em formato inesperado.", cause=exc
+                "Resposta do endpoint de reranking em formato inesperado.", cause=exc
             ) from exc
 
-        if len(embeddings) != len(texts):
+        expected_indices = set(range(len(documents)))
+        if set(by_index) != expected_indices:
             raise ModelResponseError(
-                "Quantidade de embeddings retornada não corresponde à quantidade "
-                "de textos enviados.",
-                context={"esperado": str(len(texts)), "recebido": str(len(embeddings))},
+                "Resposta de reranking não cobre exatamente os documentos enviados.",
+                context={
+                    "esperado": str(len(documents)),
+                    "recebido": str(len(by_index)),
+                },
             )
-        dimensions = {len(vec) for vec in embeddings}
-        if len(dimensions) > 1:
-            raise ModelResponseError(
-                "Embeddings retornados com dimensões inconsistentes entre si.",
-                context={"dimensoes": ",".join(str(d) for d in sorted(dimensions))},
-            )
-        return embeddings
-
-    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return await self._embed(texts)
-
-    async def embed_query(self, text: str) -> list[float]:
-        (embedding,) = await self._embed([text])
-        return embedding
+        return [by_index[i] for i in range(len(documents))]

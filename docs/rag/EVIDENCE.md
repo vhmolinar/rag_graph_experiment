@@ -23,9 +23,9 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ⬜ | T10/T12/T13 |
 | AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
-| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada) |
+| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente) |
-| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`. Falta: API/traces (T07/T18) |
+| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
 | AC-19 | Benchmark repetível, compara sem sobrescrever | ⬜ | T19 |
@@ -560,6 +560,99 @@ heurísticas (calibração fica para o benchmark de T19, NOTES.md §4);
 `summaries`/`concepts` de T11 ainda não existem); nenhum `ExtractionVersion`
 é registrado por `rag index` (não há coluna para associá-lo no schema
 atual).
+
+### T07 — Adapters HTTP de modelos ✅
+
+Nenhuma dependência nova (backend/dev já aprovado, NOTES.md §10.1). Interpretações
+declaradas em NOTES.md §10.8 antes de implementar: retries/circuit breaker/limite de
+concorrência implementados sobre `asyncio`/`httpx` puros (sem lib nova); auth por
+secret file via convenção explícita `*_API_KEY_FILE`; reranking usa contrato HTTP
+próprio (não existe endpoint de reranking na API OpenAI); geração usa JSON mode sobre
+`/chat/completions`, sem streaming (streaming é T14); adapter de embeddings de T06
+enriquecido, não substituído (contrato/testes de T06 preservados).
+
+Entregáveis:
+
+- **Resiliência compartilhada** (`adapters/resilience.py`): `CircuitBreaker` (máquina
+  de 3 estados — closed/open/half-open — abre após N falhas consecutivas, meio-abre
+  após timeout de reset) e `call_with_resilience` (retry com backoff exponencial só
+  para falhas transitórias, sob limite de concorrência via `asyncio.Semaphore`).
+  Função só recebe um closure opaco e exceções — nunca o corpo de requisição/resposta,
+  o que garante por construção que seus logs não podem vazar prompts/chaves (AC-16).
+- **Configuração compartilhada** (`adapters/model_settings.py`): `ModelAuthSettings`
+  (auth por `api_key` OU `api_key_file`, nunca ambos — `ValidationError` caso
+  contrário) e `ResilienceSettings` (retries/backoff/concorrência/circuit breaker),
+  reaproveitados pelos três adapters via herança múltipla de `BaseSettings`.
+- **Adapter de embeddings enriquecido** (`adapters/embedding_adapter.py`): mesmo
+  contrato HTTP de T06, agora com retry/circuit-breaker/concorrência via
+  `call_with_resilience` e auth por secret file via `ModelAuthSettings`.
+- **Adapter de geração** (`adapters/generation_adapter.py`,
+  `OpenAiCompatibleGeneratorProvider`): `POST {base_url}/chat/completions` com
+  `response_format={"type":"json_object"}`; monta mensagem `system` (política +
+  contrato de saída) e mensagem `user` com seções delimitadas (pergunta+contexto,
+  escopo, evidências numeradas por `passage_id`, instrução de profundidade); valida a
+  resposta como `GeneratedAnswer` via Pydantic; timeout maior por requisição quando
+  `depth=deep` (`deep_timeout_seconds`).
+- **Adapter de reranking** (`adapters/reranker_adapter.py`, `HttpRerankerProvider`):
+  contrato explícito `POST {base_url}/rerank` (`{model, query, documents}` →
+  `{"results": [{"index", "relevance_score"}]}`), reordena a resposta por `index` para
+  devolver pontuações na ordem de `documents` (contrato do Protocol).
+- **Doubles locais** (`tests/fixtures/model_doubles.py`): `FakeEmbeddingProvider`
+  (vetor determinístico por hash do texto), `FakeRerankerProvider` (pontuação por
+  sobreposição de termos) e `FakeGeneratorProvider` (fábrica de resposta configurável,
+  com `abstention_answer` auxiliar); todos aceitam uma fila de exceções para simular
+  falha transitória seguida de sucesso; todos satisfazem os Protocols
+  (`isinstance(..., EmbeddingProvider)` etc., verificado em teste).
+
+Testes/evidências:
+
+- contract tests com servidor HTTP simulado (respx): `test_embedding_adapter.py` (14,
+  preexistentes de T06, inalterados), `test_generation_adapter.py` (10),
+  `test_reranker_adapter.py` (11) — cobrindo sucesso, autenticação Bearer, timeout,
+  erro de conexão, 429 com/sem `Retry-After`, 5xx, 4xx, payload malformado e violação
+  de contrato (`ModelResponseError`/dimensão ou índice inválidos);
+- retry/circuit breaker/concorrência: `test_resilience.py` (14, unitário sobre
+  `CircuitBreaker`/`call_with_resilience` com relógio simulado) e
+  `test_embedding_adapter_resilience.py` (6, mesmo comportamento sobre o adapter real
+  via respx — retry-então-sucesso, esgotamento de retries, 4xx não retentado, circuito
+  abre e passa a rejeitar sem bater na rede, limite de concorrência serializa
+  chamadas);
+- autenticação por secret file: `test_model_settings.py` (6 — leitura, strip, arquivo
+  ausente/vazio falha fechado, mútua exclusividade com `api_key`) e um teste dedicado
+  em `test_embedding_adapter_resilience.py` que confirma o header `Authorization`
+  carrega a chave lida do arquivo;
+- confirmação de que chaves e payloads não aparecem em logs (AC-16):
+  `test_resilience.py::test_failure_logs_are_free_of_operation_content`, via
+  `structlog.testing.capture_logs()` — prova que um segredo presente apenas no corpo
+  da operação nunca aparece nos logs emitidos pelo retry/circuit-breaker;
+- doubles satisfazem os Protocols e são determinísticos: `test_model_doubles.py` (11).
+
+Comandos executados em 2026-08-29 (backend; frontend inalterado nesta tarefa):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK |
+| `uv run ruff format --check src tests` | OK — 81 arquivos |
+| `uv run mypy src tests` | OK — 81 arquivos |
+| `uv run pytest tests/unit -q` | OK — 321 passed, 3 skipped |
+| `uv run pytest tests/integration -q` | OK — 103 passed, 1 skipped (PostgreSQL real via testcontainers) |
+| `bash scripts/audit.sh` | OK — 0 vulnerabilidades (pip-audit --strict) |
+| `python3 scripts/security_scan.py .` | OK — nenhum IOC bloqueado |
+
+Critérios: AC-14 (timeout/5xx/429/payload inválido do endpoint de modelo sempre viram
+erro tipado — `ModelTimeoutError`/`ModelUnavailableError`/`RateLimitError`/
+`ModelResponseError` — nunca uma resposta gerada sem evidências; circuit breaker aberto
+também falha fechado, sem tentar a rede); AC-16 (prova estrutural + testada de que o
+caminho de retry/circuit-breaker não pode vazar segredos ou payload — cobre os
+adapters; API/traces continuam em T14/T18).
+
+Limitações conhecidas: o wire contract de reranking é uma escolha do implementador
+(não há convenção "compatível com OpenAI" para reranking), documentada em NOTES.md
+§10.8 item 6 — se o endpoint real usado em produção divergir desse contrato, o adapter
+precisará de ajuste; geração não cobre streaming (T14); nenhum destes adapters está
+ainda conectado a um pipeline de recuperação/geração real (T08–T13 os consomem via os
+Protocols de `rag.domain.providers`, já satisfeitos hoje pelos adapters HTTP e pelos
+doubles).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

@@ -468,3 +468,75 @@ Nenhum. Verificado em 2026-08-28: sem `plain-crypto-js`, sem axios 1.14.1/0.30.4
 não é dependência), sem referência a `sfrclak.com`. `make security-scan` automatiza essa
 verificação; `make audit` executa `pip-audit --strict` sobre o lockfile exportado e
 `npm audit` (0 vulnerabilidades em T01).
+
+### 10.8 Registro do implementador — 2026-08-29 (fase 1, T07)
+
+Interpretações declaradas antes de implementar T07 (adapters HTTP de modelos),
+não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Retries, circuit breaker e limite de concorrência: implementação própria,
+   sem dependência nova.** Nenhuma lib de retry/circuit-breaker (`tenacity`,
+   `pybreaker` etc.) está no conjunto aprovado (NOTES.md §10.1); adicionar uma
+   exigiria aprovação fora do escopo. `rag.adapters.resilience` implementa os
+   três sobre `asyncio`/`httpx` puros — mesmo espírito do rate limiting de
+   token bucket (NOTES.md §10.2 item 6). Retries só cobrem falhas
+   transitórias (`ModelTimeoutError`, `ModelUnavailableError`: timeout, conexão
+   recusada, 5xx); `RateLimitError` (429) e `ModelResponseError` (payload/
+   dimensão inválidos) nunca são retentados automaticamente — não são falhas
+   transitórias do endpoint, e sim da requisição ou da resposta recebida.
+   Circuit breaker: máquina de 3 estados (closed/open/half-open), abre após N
+   falhas consecutivas (`circuit_breaker_failure_threshold`), permite uma
+   tentativa de teste após `circuit_breaker_reset_seconds`. Concorrência:
+   `asyncio.Semaphore` por instância de provider (`max_concurrency`).
+2. **Adapter de embeddings de T06 enriquecido, não substituído.** Conforme
+   anunciado em NOTES.md §10.6 item 6: `OpenAiCompatibleEmbeddingProvider`
+   ganhou retry/circuit-breaker/concorrência via `call_with_resilience`; o
+   contrato HTTP (`POST /embeddings`) e os testes de T06
+   (`test_embedding_adapter.py`) não mudaram. Novos testes de resiliência em
+   `test_embedding_adapter_resilience.py`.
+3. **Autenticação por secret file: convenção `*_API_KEY_FILE`.** SPEC §11 só
+   exige "variáveis de ambiente ou secret files", sem prescrever o mecanismo.
+   Optou-se por um campo explícito `api_key_file: Path | None` (mixin
+   `ModelAuthSettings`, compartilhado pelos três adapters) em vez do
+   `secrets_dir` embutido do `pydantic-settings` (que exigiria nomear arquivos
+   por convenção implícita e construir os Settings com `_secrets_dir=...` fora
+   do padrão já usado em `config.py`). Definir `api_key` E `api_key_file` para
+   o mesmo endpoint é erro de configuração (`ValidationError`), não
+   precedência silenciosa — falha fechada, no espírito de RagError.
+4. **Geração: JSON mode sobre `POST /chat/completions`, não streaming.**
+   `response_format={"type":"json_object"}` é suportado pela maioria dos
+   servidores compatíveis com OpenAI (vLLM, TGI, llama.cpp server) e permite
+   validar `GeneratedAnswer` diretamente via Pydantic, sem parser de texto
+   livre. Streaming de geração é responsabilidade de T14 (SSE da API), não
+   deste adapter. Os seis blocos do prompt dissertativo (SPEC §9.3) viram uma
+   mensagem `system` (política + contrato de saída) e uma mensagem `user` com
+   seções delimitadas por cabeçalho markdown (pergunta+contexto, escopo,
+   evidências numeradas por `passage_id`, instrução de profundidade) — o
+   protocolo chat só tem os papéis `system`/`user`/`assistant`.
+5. **Timeout maior para profundidade `deep`: por requisição, não por
+   cliente.** `GenerationEndpointSettings.deep_timeout_seconds` é aplicado via
+   `timeout=` na chamada `POST` quando `request.depth is Depth.DEEP`; o
+   timeout do `httpx.AsyncClient` continua sendo o padrão (`timeout_seconds`)
+   para as demais profundidades.
+6. **Reranking: contrato HTTP explícito, não "compatível com OpenAI".** A API
+   da OpenAI não tem endpoint de reranking. Adotado o contrato difundido entre
+   servidores de reranking auto-hospedados (Cohere, Text Embeddings Inference,
+   Infinity): `POST {base_url}/rerank` com `{model, query, documents}` e
+   resposta `{"results": [{"index", "relevance_score"}, ...]}`. O adapter
+   reordena a resposta por `index` antes de devolver, para respeitar o
+   contrato do Protocol (`rerank(query, documents) -> list[float]`, pontuação
+   por documento, na ordem de `documents`).
+7. **Doubles locais vivem em `tests/fixtures/model_doubles.py`, não em
+   `src/`.** São instrumentação de teste (para T08+ exercitarem recuperação,
+   geração e planejador sem HTTP), não código de produção — mesmo critério já
+   aplicado a `tests/fixtures/builders.py` em T05. Determinísticos por hash do
+   texto (embedding) ou sobreposição de termos (reranker); aceitam uma fila de
+   exceções para simular falha transitória seguida de sucesso.
+8. **Confirmação de que chaves e payloads não aparecem em logs (SPEC §11,
+   AC-16): garantida por construção, não por redação.** `call_with_resilience`
+   só recebe um closure opaco (`operation`) e objetos de exceção — nunca o
+   corpo da requisição/resposta dos adapters (textos, prompts, evidências,
+   chave). Os únicos logs emitidos pelos adapters (retry/circuit-breaker)
+   vêm dessa função e só têm acesso a `operation_name`/`error_type`/`attempt`.
+   Testado em `test_resilience.py::test_failure_logs_are_free_of_operation_content`
+   com `structlog.testing.capture_logs()`.
