@@ -258,3 +258,63 @@ class TestChunkDocument:
             ),
         )
         assert chunk_document(doc, ChunkingParams()) == []
+
+
+class TestOriginalText:
+    """T6-05 (REVIEW_T06.md): o original do bloco canônico sobrevive ao
+    chunking, mesmo quando diverge do texto normalizado usado por `text`."""
+
+    def test_original_text_matches_when_source_has_no_normalization_loss(self) -> None:
+        doc = _pdf_doc([[(CH1, "Frase unica no paragrafo.")]])
+        nodes = chunk_document(doc, ChunkingParams())
+        assert nodes
+        for node in nodes:
+            assert node.original_text == "Frase unica no paragrafo."
+
+    def test_original_text_preserves_exact_source_when_it_differs_from_normalized(self) -> None:
+        blocks = (
+            CanonicalBlock(
+                ordinal=0,
+                kind=BlockKind.PARAGRAPH,
+                level=0,
+                text="Texto normalizado sem hifen.",
+                original_text="Texto nor-\nmalizado sem hífen.",
+                section_path=CH1,
+            ),
+        )
+        doc = CanonicalDocument(source_type=SourceType.EPUB, blocks=blocks)
+        nodes = chunk_document(doc, ChunkingParams())
+        assert nodes
+        assert nodes[0].original_text == "Texto nor-\nmalizado sem hífen."
+        assert nodes[0].text != nodes[0].original_text
+
+    def test_original_text_joins_multiple_contributing_blocks_without_duplication(self) -> None:
+        blocks = (
+            CanonicalBlock(
+                ordinal=0,
+                kind=BlockKind.PARAGRAPH,
+                level=0,
+                text="Primeiro paragrafo.",
+                original_text="Primeiro parágrafo original.",
+                section_path=CH1,
+            ),
+            CanonicalBlock(
+                ordinal=1,
+                kind=BlockKind.PARAGRAPH,
+                level=0,
+                text="Segundo paragrafo.",
+                original_text="Segundo parágrafo original.",
+                section_path=CH1,
+            ),
+        )
+        doc = CanonicalDocument(source_type=SourceType.EPUB, blocks=blocks)
+        # janela grande o bastante para juntar os dois parágrafos num único chunk.
+        nodes = chunk_document(
+            doc, ChunkingParams(child_target_tokens=1000, parent_target_tokens=1000)
+        )
+        assert len(nodes) == 2  # 1 pai + 1 filho, ambos cobrindo os dois parágrafos
+        for node in nodes:
+            assert "Primeiro parágrafo original." in node.original_text
+            assert "Segundo parágrafo original." in node.original_text
+            assert node.original_text.count("Primeiro parágrafo original.") == 1
+            assert node.text != node.original_text
