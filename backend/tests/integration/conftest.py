@@ -51,6 +51,7 @@ ALL_TABLES = (
     "model_endpoint_versions",
     "prompt_versions",
     "retrieval_policy_versions",
+    "context_policy_versions",
 )
 
 

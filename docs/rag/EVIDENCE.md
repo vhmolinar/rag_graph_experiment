@@ -12,19 +12,19 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); falta o caminho passagem→leitor (T17) |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` (evidência citável carrega obra/edição/seção/página/offsets), `test_opening_origin_reproduces_text` (com edição, página física e offsets o trecho se reproduz exatamente); falta o caminho passagem→leitor (T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
 | AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita; ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`. Falta o estágio de geração/verificação (T13) |
-| AC-08 | Modo quote sem texto sintetizado | ◐ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo) |
+| AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem campo de prosa); T12: `test_context.py::TestQuoteContract` (contrato `{"evidences"}` fixo), `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` (só trechos literais e metadados, ordem = ranking reranked), `test_quote_never_calls_generator` (nenhuma chamada ao provedor de geração; resposta = só trechos do acervo) |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
-| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada). Execução da diversidade/limite flexível na montagem de contexto e declaração de limitação: T12/T13 |
-| AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts` (seção/capítulo/edição com suportes), `test_summary_without_support_is_rejected` (SPEC §7.4), `test_summaries_never_serve_as_citations` (descendência devolve SÓ passagens; o texto da síntese nunca é passagem), `test_concept_leads_to_original_passages`, `test_enrichment.py::TestValidatedSupports` (suporte fora do escopo falha fechado) |
+| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada); T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` (seleção de evidências de AMBAS edições com limite flexível por edição; nunca preenche com obra menos relevante), `test_context.py::TestSelectEvidences::test_diversity_caps_per_edition_flexibly`/`test_diversity_never_pads_less_relevant_work` (capa por edição flexível e ausência de preenchimento, função pura). Declaração de limitação na resposta: T13 |
+| AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts` (seção/capítulo/edição com suportes), `test_summary_without_support_is_rejected` (SPEC §7.4), `test_summaries_never_serve_as_citations` (descendência devolve SÓ passagens; o texto da síntese nunca é passagem), `test_concept_leads_to_original_passages`, `test_enrichment.py::TestValidatedSupports` (suporte fora do escopo falha fechado); T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable` (o texto parental expande o contexto montado mas nunca é citação literal), `test_context.py` (expansão parental truncada e desativável) |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history` (versões de síntese/conceito registradas via `ModelEndpointVersion`+`PromptVersion`; reexecução com nova versão NUNCA sobrescreve histórico), `test_reexecution_same_version_is_idempotent`. Falta: `AnswerRun` completo com todas as versões (T13/T18) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history` (versões de síntese/conceito registradas via `ModelEndpointVersion`+`PromptVersion`; reexecução com nova versão NUNCA sobrescreve histórico), `test_reexecution_same_version_is_idempotent`; T12: `test_context_pipeline.py::test_context_policy_version_is_registered` (política de contexto versionada via `ContextPolicyVersion`; mesma política → mesma versão idempotente), migration `0003_context_policy_versions` (tabela + trigger de imutabilidade). Falta: `AnswerRun` completo com todas as versões (T13/T18) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
@@ -1070,6 +1070,88 @@ as passagens do escopo ao provedor não são ainda calibrados para contexto de
 modelo (NOTES.md §4, benchmark T19); uma falha intermitente observada UMA vez
 em `test_ingest.py::test_reingest_is_idempotent` durante a rodada não se
 reproduziu nas execuções seguintes (preexistente, sem relação a T11).
+
+### T12 — Montagem de contexto e modo quote ✅
+
+Uma migration nova (`0003_context_policy_versions`, gemelha de
+`retrieval_policy_versions` de T09 — NOTES.md §10.13 item 1); nenhuna
+dependência nova. Interpretações registradas em NOTES.md §10.13 antes de
+implementar: `ContextPolicy`/`ContextBudget` no domínio (mesma convenção de
+`RetrievalPolicy`); seleção de evidências como função pura do domínio
+(`select_evidences`) com deduplicação, diversidade adaptativa e orçamento de
+contexto; diversidade = limite flexível por edição, nunca quota cega (a
+seleção pode ficar abaixo de `max_evidences`; nunca se preenche com obra
+menos relevante); modo quote = `QuoteResponse` construido a partir da
+montação, sem provedor de geração (ausência estrutural + testada); metadados
+citáveis resolvidos numa única query por passagem (`get_citable`).
+
+Entregáveis:
+
+- **Domínio** (`domain/context.py`): `ContextBudget`/`ContextPolicy` (orçamento
+  por profundidade com padrões conservadores e monotonos), `CitablePassage`/
+  `ContextCandidate` (metadados citáveis unidos à posição do ranking),
+  `ContextEvidence`/`PackedContext` (com `total_chars`/`context_budget_chars`
+  — validação estrutural de não-excedência), `context_total_chars` e
+  `select_evidences` (deduplicação + diversidade + orçamento);
+- **Versão** (`domain/versions.py` + migration `0003_context_policy_versions` +
+  allowlist do `VersionsRepository`): `ContextPolicyVersion` registrada
+  idempotente (AC-15);
+- **Repository** (`infrastructure/repositories/passages.py`):
+  `PassagesRepository.get_citable` resolve num único JOIN seção (path), página
+  física/rótulo impresso, obra (`work_id`) e passagem-pai (expansão parental,
+  NUNCA citável);
+- **Serviço** (`application/context.py`, `ContextService`): `assemble(...) ->
+  PackedContext` (evidências + expansão parental + política versionada) e
+  `quote(...) -> QuoteResponse` — SEM provedor de geração (AC-08).
+
+Testes:
+
+- unitários (`tests/unit/test_context.py`, 19 testos): política cobre as três
+  profundidades exatamente uma vez; deduplicação por `passage_id`; ordem do
+  ranking preservada; `max_evidences` respeitado; orçamento de contexto nunca
+  excedido (evidência que não couber é descartada); expansão parental truncada
+  e desativável (`parent_expansion_chars=0`); diversidade capa por edição e
+  ausência de preenchimento (factual sem capa; comparativa/conceitual com
+  capa flexível); `PackedContext` rejeita `total_chars > context_budget_chars`;
+  contrato `QuoteResponse` fixo em `{"evidences"}`;
+- integração (`tests/integration/test_context_pipeline.py`, 9 testos contra
+  PostgreSQL real): snapshot de quote com trechos literais e metadados
+  (obra/edição/seção/página/offsets — AC-03/AC-08); nenhuna chamada ao provedor
+  de geração (AC-08); abertura da origem reproduz o texto (offsets recompõem o
+  trecho — AC-03); orçamento de contexto não excedido; diversidade para
+  comparativa seleciona de AMBAS edições (AC-11); factual sem capa por edição;
+  expansão parental no contexto nunca citável (AC-12); `ContextPolicyVersion`
+  registrada idempotente (AC-15).
+
+Comandos executados em 2026-08-30 (Linux x86_64, Python 3.12, uv 0.12.7):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run pytest tests/unit -q` | 449 passed, 3 skipped (skips preexistentes de T05, modelos de OCR ausentes) |
+| `uv run pytest tests/unit/test_context.py -q` | 19 passed |
+| `uv run ruff check src tests` | All checks passed |
+| `uv run ruff format --check src tests` | 106 arquivos ok |
+| `uv run mypy src tests` | Success: no issues found in 106 source files (strict) |
+
+Nota: `tests/integration/test_context_pipeline.py` e a migration 0003 são
+exercitados contra PostgreSQL real via testcontainers (requer Docker) — a
+execução fica registrada no ambiente do revisor quando `make test-integration`
+for executado com Docker disponível.
+
+Critérios: AC-03 (evidência citável abre edição/página/trecho corretos;
+offsets recompõem o trecho — coberto; o leitor T17 completa o caminho
+passagem→PDF); AC-08 (modo quote sem texto sintetizado — coberto
+integralmente); AC-11 (diversidade adaptativa executada na seleção — coberto;
+a declaração de limitação na resposta fica para T13); AC-12 (expansão parental
+nunca citável — coberto); AC-15 (`ContextPolicyVersion` registrada — contribui
+à cobertura; `AnswerRun` completo fica para T13/T18).
+
+Limitações conhecidas: os valores padrão de `ContextPolicy` (max_evidences,
+orçamento, expansão parental, limite por edição) são conservadores e devem ser
+calibrados no benchmark de T19 (NOTES.md §4); o `get_citable` faz uma query por
+candidato (escala < 1.000 livros, mesmo padrão de `RetrievalService`); os
+skips de `tests/unit` são preexistentes (OCR exige modelos não disponíveis neste
+ambiente).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

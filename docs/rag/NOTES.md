@@ -836,3 +836,71 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
     fase 1 continuam sendo ingest/ocr/index/inspect). O enriquecimento é
     invocado via `EnrichmentService`; integração no CLI/API fica para T14+
     se a operação o exigir.
+
+### 10.13 Registro do implementador — 2026-08-30 (fase 1, T12)
+
+Interpretações declaradas antes de implementar T12 (montagem de contexto e modo
+quote), não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Nova tabela de versão `context_policy_versions` (migration 0003).** A
+   política de montagem de contexto (número de evidências, orçamento de
+   contexto, expansão parental, limite flexível por edição) afeta a resposta
+   (SPEC §2: "toda configuração que afeta uma resposta deve ser versionada";
+   AC-15). O schema aprovado (T03) lista seis tipos de versão, mas §6 define
+   um MÍNIMO ("devem existir registros para..."), não um teto: adicionar um
+   registro de versão novo é aditivo (nova tabela, trigger de imutabilidade
+   mesmo padrão), não altera tabelas existentes nem critérios. A tabela é
+   gemelha da `retrieval_policy_versions` (T09) e registrada na allowlist do
+   `VersionsRepository`; `PackedContext.policy_version_id` expõe o registro
+   para `AnswerRun`/T13.
+2. **`ContextPolicy`/`ContextBudget` no domínio, mesma convenção de
+   `RetrievalPolicy` (T09).** Orçamento por profundidade com valores iniciais
+   conservadores e monotonos (brief < standard < deep); calibração no
+   benchmark de T19 (NOTES.md §4). Parâmetros: `max_evidences` (número de
+   evidências citáveis, SPEC §9.1), `max_context_chars` (orçamento total de
+   contexto = evidências + expansão parental), `parent_expansion_chars`
+   (máximo de texto parental por evidência, contexto NUNCA citável) e
+   `per_edition_limit` (limite flexível por edição; `None` = sem limite).
+3. **Seleção de evidências é função pura do domínio (`select_evidences`), não
+   chamada ao provedor de geração/reranking.** Ordem preservada do ranking
+   reranked (T09); deduplicação por `passage_id`; o orçamento de contexto é
+   respeitado durante a seleção (uma evidência que não couber no orçamento
+   restante é descartada, nunca estoura) e `PackedContext` impõe
+   estruturalmente `total_chars <= context_budget_chars` (falha fechada se
+   violado — nunca se devolve contexto acima do orçamento). A expansão
+   parental é limitada por evidência (`parent_expansion_chars`), truncada
+   como contexto adicional; nunca é texto citável.
+4. **Diversidade adaptativa executada na seleção: limite flexível por edição,
+   nunca quota cega.** `select_evidences` aplica a capa por edição
+   (`per_edition_limit`) SÓ quando `needs_diversity` (comparativa/conceitual
+   ampla, SPEC §8.6). "Flexível" = a capa não é uma meta a preencher: se uma
+   edição tem MENOS candidatos que o limite, as posições sobrentes NÃO são
+   preenchidas com outra obra menos relevante; se todas as edições atingirão
+   a capa e o orçamento ainda couber, a seleção PARA (pode ficar abaixo de
+   `max_evidences`) — nunca se inclui uma obra menos relevante para atingir
+   uma quantidade fixa. Factual/navegacional maximizam relevância sem capa
+   por edição.
+5. **Modo quote = `QuoteResponse` (domínio T02) construido a partir da
+   montagem de contexto; o serviço NÃO tem provedor de geração.** `ContextService.quote`
+   delega para `ContextService.assemble` (que nunca chama o provedor de
+   geração) e projeta os `EvidenceRef` seleccionados. Ausência de geração é
+   estrutural (nenhum `GeneratorProvider` na assinatura) E testada
+   ("nenhuma chamada ao generator em quote", T12). O `QuoteResponse` não
+   adiciona campos (o teste `test_has_no_prose_fields` de T02 fixa o
+   contrato `{"evidences"}`).
+6. **Metadados citáveis resolvidos numa única query por passagem
+   (`PassagesRepository.get_citable`).** Joins `passages` → `sections`
+   (path), `pages` (página física/rótulo impresso da `page_start_id`),
+   `editions` → `works` (`work_id`) e a passagem-pai (`parent_passage_id`/
+   `parent_text` via self-join). EPUB sem páginas: `physical_page`/
+   `printed_label`/offsets ficam nulos (NOTES.md §10.6 item 3). O trecho
+   recomposto a partir de páginas e offsets deve reproduzir `text` da
+   evidência (AC-03; testado via `PagesRepository.list_by_edition`).
+7. **`ContextService` expõe `assemble(...) -> PackedContext` e
+   `quote(...) -> QuoteResponse`; o provedor de geração fica FORA do serviço.**
+   `PackedContext.evidences` (com `parent_text`) é a entrada natural de T13
+   (`GenerationRequest.evidences` = `EvidenceRef` de cada evidência; o texto
+   parental, não citável, pode entrar como contexto adicional). Sem
+   migration nova além de `context_policy_versions`; sem alteração em
+   `runs.py`/`AnswerRun` nesta tarefa (a integração completa de versões na
+   `AnswerRun` é T13/T18).

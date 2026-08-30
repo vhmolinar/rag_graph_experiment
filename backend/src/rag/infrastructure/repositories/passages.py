@@ -9,6 +9,7 @@ from uuid import UUID
 from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
 
+from rag.domain.context import CitablePassage
 from rag.domain.errors import EmbeddingDimensionError, NotFoundError
 from rag.domain.library import Passage
 
@@ -89,6 +90,40 @@ class PassagesRepository:
             )
             row = await cur.fetchone()
         return Passage(**row) if row else None
+
+    async def get_citable(self, passage_id: UUID) -> CitablePassage | None:
+        """Passagem com metadados citáveis (T12; AC-03).
+
+        Resolve num único JOIN as referencias de origem: seção (path), página
+        física e rótulo impresso do início, obra (`work_id`) e a passagem-pai
+        (`parent_text` para expansão de contexto, NUNCA citável — SPEC §7.3).
+        EPUB sem páginas: `physical_page`/`printed_label`/offsets ficam nulos
+        (NOTES.md §10.6 item 3). Toda condição é parametrizada.
+        """
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT p.id AS passage_id, "
+                "p.edition_id, e.work_id AS work_id, p.text, "
+                "COALESCE(s.path, ARRAY[]::text[]) AS section_path, "
+                "pstart.physical_index AS physical_page, "
+                "pstart.printed_label AS printed_label, "
+                "p.char_start, p.char_end, p.parent_passage_id, "
+                "parent.text AS parent_text "
+                "FROM passages p "
+                "JOIN editions e ON e.id = p.edition_id "
+                "LEFT JOIN sections s ON s.id = p.section_id "
+                "  AND s.edition_id = p.edition_id "
+                "LEFT JOIN pages pstart ON pstart.id = p.page_start_id "
+                "  AND pstart.edition_id = p.edition_id "
+                "LEFT JOIN passages parent ON parent.id = p.parent_passage_id "
+                "  AND parent.edition_id = p.edition_id "
+                "WHERE p.id = %s",
+                (passage_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return CitablePassage(**row)
 
     async def list_by_edition(self, edition_id: UUID) -> list[Passage]:
         async with self._conn.cursor(row_factory=dict_row) as cur:
