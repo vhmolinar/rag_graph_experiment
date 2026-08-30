@@ -1,8 +1,8 @@
 UV ?= uv
 NPM ?= npm --prefix frontend
-CONTAINER_HOST ?= unix:///run/user/1000/podman/podman.sock
+PODMAN_SOCKET ?= unix://$(XDG_RUNTIME_DIR)/podman/podman.sock
 
-.PHONY: setup lock lint format format-check typecheck test test-unit test-integration test-contract test-e2e audit security-scan clean
+.PHONY: setup lock lint format format-check typecheck test test-unit test-integration test-integration-podman test-contract test-e2e audit security-scan clean
 
 ## setup: instala dependências de backend e frontend
 setup:
@@ -40,11 +40,15 @@ test: test-unit
 
 ## test-unit: testes unitários do backend
 test-unit:
-	cd backend && $(UV) run pytest tests/unit -q --ignore=tests/unit/test_embedding_adapter.py
+	cd backend && $(UV) run pytest tests/unit -q
 
 ## test-integration: testes de integração (requer Docker para PostgreSQL)
 test-integration:
-	cd backend && DOCKER_HOST=$(CONTAINER_HOST) TESTCONTAINERS_RYUK_DISABLED=true $(UV) run pytest tests/integration -q
+	cd backend && $(UV) run pytest tests/integration -q
+
+## test-integration-podman: integração via socket Docker-compatible do Podman
+test-integration-podman:
+	cd backend && DOCKER_HOST=$(PODMAN_SOCKET) TESTCONTAINERS_RYUK_DISABLED=true $(UV) run pytest tests/integration -q
 
 ## test-contract: testes de contrato HTTP (servidores simulados)
 test-contract:

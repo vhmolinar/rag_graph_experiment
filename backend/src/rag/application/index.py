@@ -31,10 +31,10 @@ from psycopg import AsyncConnection
 from pydantic import BaseModel, ConfigDict
 
 from rag.adapters.docling_adapter import DoclingExtractor
-from rag.application.ingest import derive_sections
+from rag.application.ingest import derive_sections, resolve_edition_extraction_artifact
 from rag.domain.canonical import CanonicalDocument
 from rag.domain.chunking import ChunkingParams, ChunkNode, chunk_document, default_section_header
-from rag.domain.enums import ArtifactKind, IngestionStatus, SourceType
+from rag.domain.enums import IngestionStatus
 from rag.domain.errors import EmbeddingDimensionError, IngestionError, NotFoundError
 from rag.domain.identifiers import sha256_of_text
 from rag.domain.indexing import IndexRun
@@ -54,14 +54,6 @@ from rag.infrastructure.repositories.index_runs import IndexRunsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
-
-_EXTRACTABLE_BY_SOURCE_TYPE = {
-    SourceType.PDF_TEXT: SourceType.PDF_TEXT,
-    SourceType.EPUB: SourceType.EPUB,
-    # PDF escaneado é reextraído do derivado OCR, que tem camada de texto
-    # (mesma regra de `_extraction_type` em application/ingest.py).
-    SourceType.PDF_SCAN: SourceType.PDF_TEXT,
-}
 
 # T6-08: rótulos explícitos de revisão do algoritmo — mudar a heurística de
 # chunking ou de extração exige bumpar o sufixo aqui (nunca reaproveitar um
@@ -321,20 +313,7 @@ class IndexingService:
         return embeddings
 
     def _reextract(self, edition: Edition) -> CanonicalDocument:
-        extraction_type = _EXTRACTABLE_BY_SOURCE_TYPE[edition.source_type]
-        sha256 = edition.source_sha256
-        if edition.source_type is SourceType.PDF_SCAN:
-            ocr_ref = next(
-                (d for d in edition.derived_artifacts if d.kind is ArtifactKind.OCR_TEXT_LAYER),
-                None,
-            )
-            if ocr_ref is None:
-                raise IngestionError(
-                    "Edição pdf_scan sem derivado OCR registrado.",
-                    context={"edition_id": str(edition.id)},
-                )
-            sha256 = ocr_ref.sha256
-        suffix = ".epub" if edition.source_type is SourceType.EPUB else ".pdf"
+        sha256, extraction_type, suffix = resolve_edition_extraction_artifact(edition)
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
             with self._store.open_stream(sha256) as stream:
                 shutil.copyfileobj(stream, tmp)

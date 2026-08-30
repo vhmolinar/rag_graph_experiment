@@ -139,9 +139,36 @@ class EditionsRepository:
                 (status.value, edition_id),
             )
 
-    async def update_canonical_fingerprint(self, edition_id: UUID, fingerprint: str) -> None:
-        async with self._conn.cursor() as cur:
+    async def backfill_canonical_fingerprint(self, edition_id: UUID, fingerprint: str) -> bool:
+        """Preenche fingerprint ausente por compare-and-set.
+
+        Retorna `True` quando gravou e `False` na repetição idempotente. Uma
+        identidade existente divergente é conflito: backfill nunca funciona
+        como rebaseline silencioso.
+        """
+        async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "UPDATE editions SET canonical_fingerprint = %s WHERE id = %s",
+                "UPDATE editions SET canonical_fingerprint = %s "
+                "WHERE id = %s AND canonical_fingerprint IS NULL "
+                "RETURNING canonical_fingerprint",
                 (fingerprint, edition_id),
             )
+            if await cur.fetchone() is not None:
+                return True
+            await cur.execute(
+                "SELECT canonical_fingerprint FROM editions WHERE id = %s",
+                (edition_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            raise ConflictError(
+                "Edição deixou de existir durante o backfill.",
+                context={"edition_id": str(edition_id)},
+            )
+        if row["canonical_fingerprint"] == fingerprint:
+            return False
+        raise ConflictError(
+            "Fingerprint canônico existente diverge da reextração; backfill não sobrescreve "
+            "identidade estabelecida.",
+            context={"edition_id": str(edition_id)},
+        )

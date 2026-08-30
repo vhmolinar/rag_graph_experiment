@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
 from typer.testing import CliRunner
 
@@ -130,6 +131,38 @@ class TestIngestCommand:
         )
         assert result.exit_code == 1
         assert "não encontrada" in result.output
+
+    def test_backfill_fingerprint_command_is_idempotent(
+        self,
+        cli_env: dict[str, str],
+        book: tuple[Path, Path],
+    ) -> None:
+        runner = CliRunner()
+        app = create_app()
+        epub, meta = book
+        ingest = runner.invoke(app, ["ingest", str(epub), "--metadata", str(meta)], env=cli_env)
+        assert ingest.exit_code == 0, ingest.output
+        edition_id = ingest.output.split("id=")[1].split()[0]
+
+        # A mutação síncrona evita cruzar event loops com o CliRunner, que
+        # também chama `asyncio.run`; `cli_env` já inclui a fixture de limpeza.
+        with psycopg.connect(
+            host=cli_env["POSTGRES_HOST"],
+            port=cli_env["POSTGRES_PORT"],
+            dbname=cli_env["POSTGRES_DB"],
+            user=cli_env["POSTGRES_USER"],
+            password=cli_env["POSTGRES_PASSWORD"],
+        ) as conn:
+            conn.execute(
+                "UPDATE editions SET canonical_fingerprint = NULL WHERE id = %s",
+                (edition_id,),
+            )
+        first = runner.invoke(app, ["backfill-fingerprint", edition_id], env=cli_env)
+        second = runner.invoke(app, ["backfill-fingerprint", edition_id], env=cli_env)
+        assert first.exit_code == 0, first.output
+        assert second.exit_code == 0, second.output
+        assert "fingerprint atualizado" in first.output
+        assert "fingerprint atualizado" in second.output
 
 
 class TestIndexCommand:

@@ -12,7 +12,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); falta o caminho passagem→leitor (T17) |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages`, `test_pdf_citable_text_recomposes_offsets_across_blocks` (texto citável PDF é a fatia endereçada), `test_indexes_pdf_with_page_offsets` e `test_fingerprint_backfill_uses_registered_ocr_derivative`; falta o caminho passagem→leitor (T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ⬜ | T08/T19 |
 | AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
@@ -24,7 +24,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: histórico append-only por `IndexRun` (`test_force_reindexes_preserves_passage_history`, `test_different_chunking_params_same_edition_creates_new_run_without_force`), fingerprint integral (`test_fingerprint.py`), backfill write-once/idempotente e concorrente (`test_fingerprint_backfill_is_write_once_and_idempotent`, `test_fingerprint_backfill_never_overwrites_divergent_identity`, `test_concurrent_fingerprint_backfills_converge_idempotently`) e derivado OCR correto (`test_fingerprint_backfill_uses_registered_ocr_derivative`) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`. Falta: API/traces (T07/T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
@@ -467,15 +467,43 @@ Gates reexecutados em 2026-08-29 após as correções R6-01–R6-06:
 
 ### T06 — Chunking e indexação ✅
 
-#### Estado vigente após ROUND4
+#### Estado vigente após ROUND5
 
 As notas históricas abaixo foram superadas pela implementação append-only por
 `IndexRun`. O comportamento vigente preserva passagens antigas em
 reindexação, associa `ExtractionVersion`, `EmbeddingVersion` e
 `ModelEndpointVersion`, persiste `canonical_fingerprint` (migration `0004`) e
 permite atualização administrativa de edições legadas via
-`rag backfill-fingerprint <edition-id>`. A integração é executada via Podman:
-`make test-integration` resulta em 111 passed e 1 skipped.
+`rag backfill-fingerprint <edition-id>`. O backfill é compare-and-set: só
+preenche valor ausente, repetição equivalente é idempotente e identidade
+divergente falha com conflito; para `pdf_scan`, usa o derivado OCR registrado,
+nunca o scan original. `make test-integration` permanece neutro para Docker;
+`make test-integration-podman` seleciona explicitamente o socket compatível do
+Podman sem UID hardcoded.
+
+Evidência vigente desta rodada:
+
+- unitários: `make test-unit`;
+- contratos HTTP: `make test-contract` (suíte disjunta em `tests/contract`);
+- PostgreSQL/pgvector: `make test-integration-podman`;
+- backfill: testes de sucesso, idempotência, conflito, concorrência, CLI e
+  seleção do derivado OCR em `tests/integration/test_ingest.py` e
+  `tests/integration/test_cli.py`;
+- migration: `alembic heads` retorna somente `0004`; upgrade, downgrade seguro
+  e re-upgrade são exercitados por `test_migrations.py`.
+
+Comandos reexecutados em 2026-08-30 após as correções finais da ROUND5:
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK — 165 pacotes |
+| `make lint` / `make format-check` / `make typecheck` | OK |
+| `make test-unit` | OK — 258 passed, 3 skipped (e2e opcionais) |
+| `make test-contract` | OK — 26 passed |
+| `make test-integration-podman` | OK — 116 passed, 1 skipped (e2e OCR opcional) |
+| `make audit` | OK — pip-audit sem vulnerabilidades conhecidas; npm audit 0 |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+| `.venv/bin/alembic -c alembic.ini heads` | OK — único head `0004` |
 
 Dependências novas declaradas nesta tarefa (dentro do conjunto aprovado,
 NOTES.md §10.1 item 1, ainda não consumidas antes): `httpx==0.28.1`
