@@ -52,6 +52,7 @@ ALL_TABLES = (
     "prompt_versions",
     "retrieval_policy_versions",
     "context_policy_versions",
+    "verification_policy_versions",
 )
 
 

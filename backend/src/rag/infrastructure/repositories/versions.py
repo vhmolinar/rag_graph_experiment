@@ -21,6 +21,7 @@ from rag.domain.versions import (
     ModelEndpointVersion,
     PromptVersion,
     RetrievalPolicyVersion,
+    VerificationPolicyVersion,
     VersionRecord,
 )
 from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
@@ -50,6 +51,7 @@ _TABLES: dict[type[VersionRecord], tuple[str, tuple[str, ...], tuple[str, ...]]]
     ),
     RetrievalPolicyVersion: ("retrieval_policy_versions", (), ("label", "params")),
     ContextPolicyVersion: ("context_policy_versions", (), ("label", "params")),
+    VerificationPolicyVersion: ("verification_policy_versions", (), ("label", "params")),
 }
 
 

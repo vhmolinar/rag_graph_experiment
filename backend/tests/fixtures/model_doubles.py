@@ -1,20 +1,23 @@
 """Doubles locais dos provedores de modelo (SPEC §11, T07).
 
 Implementações em memória de `EmbeddingProvider`, `RerankerProvider`,
-`GeneratorProvider`, `PlannerProvider` e `EnrichmentProvider` para uso por
-testes de outras camadas (recuperação, geração, planejador, enriquecimento —
-T08+) sem depender de rede ou de um endpoint HTTP simulado. Determinísticas
-por padrão; cada double aceita uma fila opcional de exceções para simular
-falhas transitórias antes do comportamento normal.
+`GeneratorProvider`, `PlannerProvider`, `EnrichmentProvider` e
+`VerifierProvider` para uso por testes de outras camadas (recuperação,
+geração, planejador, enriquecimento, verificação — T08+) sem depender de rede
+ou de um endpoint HTTP simulado. Determinísticas por padrão; cada double
+aceita uma fila opcional de exceções para simular falhas transitórias antes
+do comportamento normal.
 """
 
 import hashlib
 import re
 from collections import deque
 from collections.abc import Callable, Sequence
+from uuid import UUID
 
 from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.providers import (
+    ClaimVerdict,
     ConceptExtractRequest,
     ExtractedConcept,
     ExtractedConcepts,
@@ -23,6 +26,8 @@ from rag.domain.providers import (
     PlanningRequest,
     SummaryRequest,
     SummaryResult,
+    VerificationRequest,
+    VerificationVerdict,
 )
 
 
@@ -288,3 +293,69 @@ def abstention_answer(reason: str = "Sem suporte suficiente no acervo.") -> Gene
         abstained=True,
         abstention_reason=reason,
     )
+
+
+class FakeVerifierProvider:
+    """Double de `VerifierProvider`: veredictos determinísticos.
+
+    Por padrão, toda par (afirmação, evidência) é 'supported'. Aceita uma
+    fábrica customizada para exercitar casos de afirmações não sustentadas,
+    contradições, veredictos incompletos e uma fila de exceções para simular
+    falhas transitórias (timeout etc.). Satisfaz o Protocol `VerifierProvider`.
+    """
+
+    def __init__(
+        self,
+        *,
+        verdict_factory: Callable[[VerificationRequest], VerificationVerdict] | None = None,
+        fail_with: Sequence[Exception] = (),
+    ) -> None:
+        self._verdict_factory = verdict_factory or _default_verdicts
+        self._pending_failures: deque[Exception] = deque(fail_with)
+        self.requests: list[VerificationRequest] = []
+
+    def _maybe_fail(self) -> None:
+        if self._pending_failures:
+            raise self._pending_failures.popleft()
+
+    async def verify(self, request: VerificationRequest) -> VerificationVerdict:
+        self._maybe_fail()
+        self.requests.append(request)
+        return self._verdict_factory(request)
+
+
+def _default_verdicts(request: VerificationRequest) -> VerificationVerdict:
+    verdicts = tuple(
+        ClaimVerdict(claim_id=claim.id, evidence_id=evidence_id, supported=True)
+        for claim in request.claims
+        for evidence_id in claim.evidence_ids
+    )
+    return VerificationVerdict(verdicts=verdicts)
+
+
+def verdict_factory(
+    *,
+    unsupported: set[tuple[str, UUID]] | frozenset[tuple[str, UUID]] = frozenset(),
+    contradictions: set[tuple[str, UUID]] | frozenset[tuple[str, UUID]] = frozenset(),
+) -> Callable[[VerificationRequest], VerificationVerdict]:
+    """Fábrica de veredictos com pares marcados como não sustentados ou
+    contraditórios (SPEC §9.4). Determinística."""
+
+    def _factory(request: VerificationRequest) -> VerificationVerdict:
+        verdicts: list[ClaimVerdict] = []
+        for claim in request.claims:
+            for evidence_id in claim.evidence_ids:
+                pair = (claim.id, evidence_id)
+                is_contradiction = pair in contradictions
+                is_supported = pair not in unsupported and not is_contradiction
+                verdicts.append(
+                    ClaimVerdict(
+                        claim_id=claim.id,
+                        evidence_id=evidence_id,
+                        supported=is_supported,
+                        contradiction=is_contradiction,
+                    )
+                )
+        return VerificationVerdict(verdicts=tuple(verdicts))
+
+    return _factory

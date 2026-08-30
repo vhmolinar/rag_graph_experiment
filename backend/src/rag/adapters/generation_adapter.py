@@ -37,9 +37,18 @@ from rag.domain.providers import GenerationRequest
 _DEFAULT_RETRY_AFTER_SECONDS = 60
 
 _DEPTH_INSTRUCTIONS: dict[Depth, str] = {
-    Depth.BRIEF: "Responda de forma breve e direta, em poucas frases.",
-    Depth.STANDARD: "Responda de forma equilibrada, cobrindo os pontos principais.",
-    Depth.DEEP: "Responda de forma aprofundada e completa, explorando nuances relevantes.",
+    Depth.BRIEF: (
+        "Responda de forma breve e direta, em até três parágrafos, com poucas "
+        "evidências e sem decomposição."
+    ),
+    Depth.STANDARD: (
+        "Responda de forma equilibrada: explicação, fontes relevantes e "
+        "comparação quando aplicável."
+    ),
+    Depth.DEEP: (
+        "Responda de forma aprofundada e completa: decomposição, convergências "
+        "e divergências entre fontes, limites e inferências marcadas."
+    ),
 }
 
 
@@ -72,6 +81,8 @@ def _build_user_content(request: GenerationRequest) -> str:
         for i, evidence in enumerate(request.evidences, start=1)
     )
     sections.append(f"# Evidências\n{evidence_lines}")
+    if request.verification_feedback:
+        sections.append(f"# Correções da verificação\n{request.verification_feedback}")
     sections.append(f"# Profundidade\n{_DEPTH_INSTRUCTIONS[request.depth]}")
     return "\n\n".join(sections)
 

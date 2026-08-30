@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rag.domain.answer import EvidenceRef, GeneratedAnswer
+from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.enums import Depth, SummaryScope
 from rag.domain.query import MAX_SUBQUESTIONS
 
@@ -30,6 +30,11 @@ class GenerationRequest(BaseModel):
     depth: Depth
     session_context: str | None = None
     prompt_version_id: UUID | None = None
+    verification_feedback: str | None = Field(
+        default=None,
+        max_length=20_000,
+        description="Retorno do verificador para regeneração (T13).",
+    )
 
 
 class PlanningRequest(BaseModel):
@@ -185,3 +190,54 @@ class EnrichmentProvider(Protocol):
 
     async def summarize(self, request: SummaryRequest) -> SummaryResult: ...
     async def extract_concepts(self, request: ConceptExtractRequest) -> ExtractedConcepts: ...
+
+
+class VerificationRequest(BaseModel):
+    """Pedido ao provedor de verificação (SPEC §9.4, T13).
+
+    Blocos separados (mesma convenção de `GenerationRequest`): política e
+    contrato de saída imutáveis, pergunta, as afirmações a julgar e as
+    evidências montadas (T12). O provedor julga CADA par (afirmação,
+    evidência) — nunca introduz novas afirmações.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    system_policy: str = Field(min_length=1)
+    output_contract: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    claims: tuple[Claim, ...] = Field(min_length=1)
+    evidences: tuple[EvidenceRef, ...] = Field(min_length=1)
+    prompt_version_id: UUID | None = None
+
+
+class ClaimVerdict(BaseModel):
+    """Veredicto de suporte de um par (afirmação, evidência) — SPEC §9.4."""
+
+    model_config = ConfigDict(frozen=True)
+
+    claim_id: str = Field(min_length=1, max_length=64)
+    evidence_id: UUID
+    supported: bool
+    contradiction: bool = False
+    detail: str | None = Field(default=None, max_length=2000)
+
+
+class VerificationVerdict(BaseModel):
+    """Conjunto de veredictos do provedor. Nunca introduz conteúdo novo."""
+
+    model_config = ConfigDict(frozen=True)
+
+    verdicts: tuple[ClaimVerdict, ...] = Field(default_factory=tuple)
+
+
+@runtime_checkable
+class VerifierProvider(Protocol):
+    """Verificação semântica de afirmações (SPEC §9.4, T13).
+
+    Julga se cada evidência citada realmente sustenta a afirmação e identifica
+    contradições entre resposta e fonte. A existência dos IDs é
+    responsabilidade do serviço, não deste provedor (NOTES.md §10.14 item 2).
+    """
+
+    async def verify(self, request: VerificationRequest) -> VerificationVerdict: ...

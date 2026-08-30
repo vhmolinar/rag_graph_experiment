@@ -16,15 +16,15 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
-| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita; ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`. Falta o estágio de geração/verificação (T13) |
+| AC-07 | Exclusão de obra vale em todos os estágios | ✅ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita; ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` (exclusão por obra aplicada no SQL de recuperação flui até a montagem de contexto e a geração — o provedor de geração só vê as evidências permitidas) |
 | AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem campo de prosa); T12: `test_context.py::TestQuoteContract` (contrato `{"evidences"}` fixo), `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` (só trechos literais e metadados, ordem = ranking reranked), `test_quote_never_calls_generator` (nenhuma chamada ao provedor de geração; resposta = só trechos do acervo) |
-| AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
-| AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
-| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada); T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` (seleção de evidências de AMBAS edições com limite flexível por edição; nunca preenche com obra menos relevante), `test_context.py::TestSelectEvidences::test_diversity_caps_per_edition_flexibly`/`test_diversity_never_pads_less_relevant_work` (capa por edição flexível e ausência de preenchimento, função pura). Declaração de limitação na resposta: T13 |
+| AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ✅ | T02: `test_answer.py::TestClaim` (contrato estrutural); T13: `test_dissertative_pipeline.py::test_unsupported_claim_is_marked_as_inference` (afirmação não sustentada é marcada como inferência — CORRECTED), `test_dissertative.py::TestUnsupportedClaims` (marcação determinística, abstenção forzada se cobertura < limiar), `test_verification.py::TestMarkUnsupportedAsInference` (função pura) |
+| AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção); T13: `test_dissertative_pipeline.py::test_question_without_support_abstains` (abstenção do gerador sem chamar o verificador), `test_dissertative.py::TestGeneratorAbstention`/`TestUnsupportedClaims::test_low_coverage_forces_abstention` (abstenção forzada por cobertura < limiar) |
+| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada); T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` (seleção de evidências de AMBAS edições com limite flexível por edição; nunca preenche com obra menos relevante), `test_context.py::TestSelectEvidences::test_diversity_caps_per_edition_flexibly`/`test_diversity_never_pads_less_relevant_work` (capa por edição flexível e ausência de preenchimento, função pura); T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` + `test_dissertative.py::TestComparativeLimitation` (declaração determinística da limitação de fonte única na resposta) |
 | AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts` (seção/capítulo/edição com suportes), `test_summary_without_support_is_rejected` (SPEC §7.4), `test_summaries_never_serve_as_citations` (descendência devolve SÓ passagens; o texto da síntese nunca é passagem), `test_concept_leads_to_original_passages`, `test_enrichment.py::TestValidatedSupports` (suporte fora do escopo falha fechado); T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable` (o texto parental expande o contexto montado mas nunca é citação literal), `test_context.py` (expansão parental truncada e desativável) |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
-| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history` (versões de síntese/conceito registradas via `ModelEndpointVersion`+`PromptVersion`; reexecução com nova versão NUNCA sobrescreve histórico), `test_reexecution_same_version_is_idempotent`; T12: `test_context_pipeline.py::test_context_policy_version_is_registered` (política de contexto versionada via `ContextPolicyVersion`; mesma política → mesma versão idempotente), migration `0003_context_policy_versions` (tabela + trigger de imutabilidade). Falta: `AnswerRun` completo com todas as versões (T13/T18) |
+| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ✅ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado); T13: `test_verifier_adapter.py` (11 contract tests do provedor de verificação), `test_dissertative_pipeline.py::test_verifier_timeout_releases_no_unverified_answer` (timeout do verificador falha fechado — nenhuna resposta não verificada é liberada), `test_dissertative.py::TestVerifierFailure`, `test_invalid_citation_is_regenerated_with_feedback`/`test_invalid_id_persists_fails_closed` (citação fabricada nunca é liberada; sem fallback de conhecimento externo) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history`, `test_reexecution_same_version_is_idempotent`; T12: `test_context_pipeline.py::test_context_policy_version_is_registered`, migration `0003_context_policy_versions`; T13: `test_dissertative_pipeline.py::test_versions_are_registered` (prompts de geração/verificação, endpoints `generator`/`verifier` e política de verificação registrados), `test_same_policy_is_idempotent_version`, migration `0004_verification_policy_versions`, `test_dissertative.py::TestVersions`. Falta: `AnswerRun` completo com todas as versões (T18) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
@@ -1152,6 +1152,116 @@ calibrados no benchmark de T19 (NOTES.md §4); o `get_citable` faz uma query por
 candidato (escala < 1.000 livros, mesmo padrão de `RetrievalService`); os
 skips de `tests/unit` são preexistentes (OCR exige modelos não disponíveis neste
 ambiente).
+
+### T13 — Geração dissertativa e verificação ✅
+
+Uma migration nova (`0004_verification_policy_versions`, gemelha de
+`context_policy_versions` de T12 — NOTES.md §10.14 item 5); nenhuna
+dependência nova. Interpretações registradas em NOTES.md §10.14 antes de
+implementar: contrato `VerifierProvider` próprio (a verificação julga cada par
+afirmação/evidência, semântica distinta da geração); existência de IDs
+determinística no domínio (`invalid_evidence_ids` — citação fabricada nunca é
+liberada; após o limite de regenerações, `VerificationError`); suporte/
+contradição semânticas do provedor com agregação pura (`assess_claims`);
+correção final após o limite = marca as afirmações não sustentadas como
+inferências (`mark_unsupported_as_inference`, AC-09); `VerificationPolicy`
+versionada; timeout do provedor de verificação falha fechado (`VerificationError`
+— nenhuna resposta não verificada é liberada); AC-11 = limitação de fonte única
+determinística no serviço; abstenção do gerador aceita sem verificação
+(caminho separado da abstenção forzada).
+
+Entregáveis:
+
+- **Domínio** (`domain/verification.py`): `VerificationBudget`/`VerificationPolicy`
+  (iterações e limiar de cobertura por profundidade, padrões conservadores e
+  monotonos), `invalid_evidence_ids` (rechazo determinístico de IDs
+  inexistentes), `ClaimAssessment`/`assess_claims` (agregação dos veredictos do
+  provedor — um par sem veredicto é tratado como não sustentado, falha
+  fechada) e `mark_unsupported_as_inference` (correção "marca", AC-09);
+- **Contrato de provedor** (`domain/providers.py`): `VerificationRequest`/
+  `ClaimVerdict`/`VerificationVerdict` e o Protocol `VerifierProvider`;
+  `GenerationRequest.verification_feedback` (campo aditivo para o retorno do
+  verificador na regeneração);
+- **Versão** (`domain/versions.py` + migration `0004_verification_policy_versions`
+  + allowlist do `VersionsRepository`): `VerificationPolicyVersion` registrada
+  idempotente (AC-15);
+- **Adapter HTTP** (`adapters/verifier_adapter.py`,
+  `OpenAiCompatibleVerifierProvider`): `POST /chat/completions` compatível com
+  OpenAI (JSON mode), resiliência de T07 (`call_with_resilience`), auth por
+  ambiente/secret file;
+- **Adapter de geração refinado** (`adapters/generation_adapter.py`): instruções
+  de profundidade alinhadas a SPEC §9.1 (brief: até três parágrafos;
+  standard: explicação + comparação; deep: decomposição, convergências/
+  divergências, inferências marcadas) e seção `# Correções da verificação` no
+  prompt quando o retorno do verificador existir;
+- **Serviço** (`application/dissertative.py`, `DissertativeService`): laço
+  geração→verificação→regeneraça com limite por profundidade; abstenção forzada
+  se a cobertura ficar abaixo do limiar; `VerificationError` fechado para
+  citação fabricada persistente e para timeout do verificador; limitação
+  determinística de fonte única (AC-11); registra `PromptVersion`
+  (geraça/verificação), `ModelEndpointVersion` (generator/verifier) e
+  `VerificationPolicyVersion`; `DissertativeAnswer` devolve a resposta
+  verificada + as versões (AC-15);
+- **Double** (`tests/fixtures/model_doubles.py::FakeVerifierProvider` + fábrica
+  `verdict_factory`): veredictos determinísticos com pares não sustentados/
+  contraditórios e fila de exceções (timeout etc.).
+
+Testes/evidências:
+
+- **Unit** (`tests/unit/test_verification.py`, vente testos): política cobre as
+  três profundidades exatamente uma vez; defaults monotonos; `invalid_evidence_ids`
+  detecta e ordena determinísticamente; `assess_claims` (pairs sem veredicto →
+  não sustentado; contradição registrada; veredictos extras ignorados);
+  `mark_unsupported_as_inference` (marca só as não sustentadas, revalida,
+  no-op com conjunto vazio);
+- **Contrato HTTP** (`tests/unit/test_verifier_adapter.py`, 11 testos, respx):
+  sucesso de veredictos (suporte/contradição), Bearer auth, timeout, conexão,
+  429 com `Retry-After`, 5xx, 4xx, envelope malformado, conteúdo não-JSON,
+  violação de contrato — todos viram erro tipado (AC-14);
+- **Serviço** (`tests/unit/test_dissertative.py`, 18 testos): fluxo aceito;
+  abstenção do gerador sem chamar o verificador; ID inexistente → regeneração
+  com feedback e correção; ID inexistente persistente → `VerificationError`
+  fechado; afirmação não sustentada marcada como inferência (CORRECTED);
+  cobertura baixa → abstenção forzada; contradição registrada e marcada;
+  timeout do verificador → `VerificationError`; AC-11 (comparativa fonte única
+  declara limitação; duas fontes não; factual sem limitação); versões
+  registradas e devolvidas;
+- **Integração** (`tests/integration/test_dissertative_pipeline.py`, 7 testos
+  contra PostgreSQL real): citação de ID inexistente rejeitada e regenerada
+  com feedback (2 iteraciones); afirmação não sustentada marcada (AC-09);
+  abstenção (AC-10); timeout do verificador não libera resposta não verificada
+  (AC-14); comparativa com fonte única declara limitação com exclusão de obra
+  aplicada na recuperação (AC-07/AC-11); versões de prompts/endpoints/política
+  registradas e idempotentes (AC-15).
+
+Comandos executados em 2026-08-30 (Linux x86_64, Python 3.12, uv 0.12.7):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | All checks passed |
+| `uv run ruff format --check src tests` | 113 arquivos ok |
+| `uv run mypy src tests` | Success: no issues found in 113 source files (strict) |
+| `uv run pytest tests/unit -q` | 495 passed, 3 skipped (skips preexistentes de T05, modelos de OCR ausentes) |
+| `DOCKER_HOST=...podman.sock TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/integration -q` | 165 passed, 1 skipped (e2e opcional) |
+
+Critérios: AC-07 (exclusão de obra flui da recuperação à montagem e geração —
+coberto integralmente); AC-09 (afirmação sem evidência válida é marcada como
+inferência — coberto); AC-10 (pergunta sem resposta produce abstenção, caminho
+do gerador e forzada — coberto); AC-11 (comparativa com fonte única declara a
+limitação — coberto); AC-14 (timeout/falha do provedor de verificação e
+citação fabricada nunca liberan resposta não verificada, sem fallback de
+conhecimento externo — coberto); AC-15 (versões de prompts/endpoints/política
+de verificação registradas e idempotentes — contribui; `AnswerRun` completo
+fica para T18).
+
+Limitações conhecidas: os valores padrão de `VerificationPolicy` (iterações e
+limiar de cobertura) são conservadores e devem ser calibrados no benchmark de
+T19 (NOTES.md §4); a correção final usa a opção "marca" (inferência), não
+remove/corrige de texto — transformação determinística sobre o contrato
+`Claim` (a `answer_markdown` gerada não é reescrita; a limitação registra as
+afirmações marcadas); a integração completa de `DissertativeAnswer`/versões em
+`AnswerRun` fica para T18; o adapter de verificação não está ainda conectado a
+um endpoint real de modelo em produção (T14 os integra).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

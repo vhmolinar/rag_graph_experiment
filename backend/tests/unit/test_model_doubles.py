@@ -13,11 +13,13 @@ from model_doubles import (
     FakeEnrichmentProvider,
     FakeGeneratorProvider,
     FakeRerankerProvider,
+    FakeVerifierProvider,
     abstention_answer,
     summary_without_support,
+    verdict_factory,
 )
 
-from rag.domain.answer import EvidenceRef
+from rag.domain.answer import Claim, EvidenceRef
 from rag.domain.enums import Depth, SummaryScope
 from rag.domain.errors import ModelTimeoutError
 from rag.domain.providers import (
@@ -29,6 +31,8 @@ from rag.domain.providers import (
     PassageRef,
     RerankerProvider,
     SummaryRequest,
+    VerificationRequest,
+    VerifierProvider,
 )
 
 
@@ -183,3 +187,54 @@ class TestFakeEnrichmentProvider:
             await provider.summarize(request)
         result = await provider.summarize(request)
         assert result.supporting_passage_ids == tuple(p.passage_id for p in request.passages)
+
+
+class TestFakeVerifierProvider:
+    def _request(self) -> VerificationRequest:
+        evidence = EvidenceRef(
+            passage_id=uuid4(),
+            edition_id=uuid4(),
+            work_id=uuid4(),
+            text="trecho",
+            score=0.5,
+            rank=0,
+        )
+        return VerificationRequest(
+            system_policy="p",
+            output_contract="c",
+            question="q",
+            claims=(Claim(id="c1", text="afirmação", evidence_ids=(evidence.passage_id,)),),
+            evidences=(evidence,),
+        )
+
+    def test_satisfies_protocol(self) -> None:
+        assert isinstance(FakeVerifierProvider(), VerifierProvider)
+
+    async def test_default_all_pairs_supported(self) -> None:
+        provider = FakeVerifierProvider()
+        request = self._request()
+        verdict = await provider.verify(request)
+        assert len(verdict.verdicts) == 1
+        assert verdict.verdicts[0].supported
+        assert not verdict.verdicts[0].contradiction
+        assert provider.requests == [request]
+
+    async def test_verdict_factory_marks_unsupported_and_contradiction(self) -> None:
+        request = self._request()
+        evidence_id = request.evidences[0].passage_id
+        provider = FakeVerifierProvider(
+            verdict_factory=verdict_factory(
+                unsupported={("c1", evidence_id)}, contradictions={("c1", evidence_id)}
+            )
+        )
+        verdict = await provider.verify(request)
+        assert not verdict.verdicts[0].supported
+        assert verdict.verdicts[0].contradiction
+
+    async def test_injected_failure_then_success(self) -> None:
+        provider = FakeVerifierProvider(fail_with=[ModelTimeoutError()])
+        request = self._request()
+        with pytest.raises(ModelTimeoutError):
+            await provider.verify(request)
+        verdict = await provider.verify(request)
+        assert verdict.verdicts[0].supported

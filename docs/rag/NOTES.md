@@ -898,9 +898,73 @@ quote), não bloqueantes; podem ser revistas pelo usuário.
    evidência (AC-03; testado via `PagesRepository.list_by_edition`).
 7. **`ContextService` expõe `assemble(...) -> PackedContext` e
    `quote(...) -> QuoteResponse`; o provedor de geração fica FORA do serviço.**
-   `PackedContext.evidences` (com `parent_text`) é a entrada natural de T13
-   (`GenerationRequest.evidences` = `EvidenceRef` de cada evidência; o texto
-   parental, não citável, pode entrar como contexto adicional). Sem
-   migration nova além de `context_policy_versions`; sem alteração em
-   `runs.py`/`AnswerRun` nesta tarefa (a integração completa de versões na
-   `AnswerRun` é T13/T18).
+    `PackedContext.evidences` (com `parent_text`) é a entrada natural de T13
+    (`GenerationRequest.evidences` = `EvidenceRef` de cada evidência; o texto
+    parental, não citável, pode entrar como contexto adicional). Sem
+    migration nova além de `context_policy_versions`; sem alteração em
+    `runs.py`/`AnswerRun` nesta tarefa (a integração completa de versões na
+    `AnswerRun` é T13/T18).
+
+### 10.14 Registro do implementador — 2026-08-30 (fase 1, T13)
+
+Interpretações declaradas antes de implementar T13 (geração dissertativa e
+verificação), não bloqueantes; podem ser revistas pelo usuário.
+
+1. **`VerifierProvider` é contrato novo** (`domain/providers.py`), não reuso
+   de `GeneratorProvider`. A verificação julga cada par (afirmação,
+   evidência) — semântica distinta da geração. `VerificationRequest`/
+   `ClaimVerdict`/`VerificationVerdict` definem o contrato; o adapter
+   `OpenAiCompatibleVerifierProvider` usa o endpoint compatível com OpenAI
+   (`/chat/completions`, JSON mode) e a mesma resiliência de T07.
+2. **Existência de IDs é determinística no serviço (função pura do domínio),
+   NUNCA do provedor.** `invalid_evidence_ids` compara os IDs citados pelas
+   afirmações contra o conjunto de evidências montado (T12). Uma citação
+   inexistente é CITAÇÃO FABRICADA (SPEC §9.4 "rejeita IDs inexistentes";
+   checklist §20 bloqueador): após o limite de regenerações,
+   `VerificationError` — a resposta nunca é liberada com ID inexistente.
+3. **Suporte/contradição são semânticas do provedor; a agregação é função
+   pura do domínio (`assess_claims`).** Uma afirmação é sustentada SÓ quando
+   TODAS as suas evidências citadas receberam veredicto `supported` sem
+   contradição; um par ausente do veredicto é tratado como não sustentado
+   (conservador, falha fechada — o provedor não pode omitir silenciosamente
+   um juízo). Veredictos para pares não informados (afirmação ou evidência
+   inexistentes) são ignorados defensivamente.
+4. **Correção final após o limite: afirmações não sustentadas/contraditorias
+   são MARCadas como inferências (`mark_unsupported_as_inference`).** SPEC
+   §9.4: "remove, corrige ou marca inferências sem suporte direto". O serviço
+   usa a opção "marca" — AC-09 exige "marcação explícita de inferência"; é
+   transformação determinística do `Claim` (`inference=True`), nunca introduz
+   conteúdo novo. Se a cobertura ficar abaixo do limiar da política, há
+   ABSTENÇÃO forzada (`FORCED_ABSTENTION`) — a resposta abstida não carrega
+   afirmações (AC-10).
+5. **`VerificationPolicy`/`VerificationBudget` versionados via nova tabela
+   `verification_policy_versions` (migration 0004).** Mesmo padrão de T12
+   (NOTES.md §10.13 item 1): a política de verificação (iterações e limiar de
+   cobertura) afeta a resposta e deve ser versionada (SPEC §2, AC-15).
+   Valores iniciais conservadores e monotonos (brief < standard < deep);
+   calibração no benchmark de T19 (NOTES.md §4).
+6. **Timeout/falha do provedor de verificação falha fechado: nenhuna resposta
+   não verificada é liberada.** O serviço envolve a chamada ao provedor e
+   devolve `VerificationError` (cause preservado). Falha de GERAÇÃO, pela
+   contrário, propagha como `ModelError` tipado (AC-14) — o serviço não a
+   mascara.
+7. **AC-11: limitação de fonte única é garantia determinística do serviço.**
+   Se a intenção for comparativa e as evidências montadas virem de UMA única
+   obra, o serviço anexa uma limitação em `GeneratedAnswer.limitations` (se
+   ainda não estiver presente). Não depende de o gerador lembrar-se — AC-11 é
+   garantido por construção, não por prompt.
+8. **Abstenção do gerador é aceita sem verificação (nenhumas afirmações a
+   verificar); a verificação forzada é caminho separado.** Se
+   `GeneratedAnswer.abstained`, o serviço devolve a resposta abstida com
+   `VerificationResult` vazio (`total_claims=0`, `coverage=1.0` vacua, action
+   ACCEPTED) e sem chamar o provedor de verificação. A forzada (cobertura <
+   limiar após o limite) é caminho distinto (item 4). Ambas produzem abstenção
+   (AC-10).
+9. **Versões registradas pelo serviço (`PromptVersion` + `ModelEndpointVersion`
+   + `VerificationPolicyVersion`).** Prompt de geração e de verificação são
+   templates hasheados (mesma convenção de T11); `ModelEndpointVersion` por
+   papel (`generator`/`verifier`, kind `generator`). As instruções de
+   profundidade continuam vivendo no adapter (conteúdo de prompt do adapter,
+   mesmo critério de T11 para o template). `DissertativeAnswer` devolve os
+   IDs das versões registradas; a integração completa em `AnswerRun` fica para
+   T18 (NOTES.md §10.13 item 7).

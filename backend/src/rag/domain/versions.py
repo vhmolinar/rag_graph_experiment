@@ -63,3 +63,7 @@ class RetrievalPolicyVersion(VersionRecord):
 class ContextPolicyVersion(VersionRecord):
     """Parâmetros de montagem de contexto: max_evidences, orçamento de
     contexto, expansão parental e limite flexível por edição (T12, AC-15)."""
+
+
+class VerificationPolicyVersion(VersionRecord):
+    """Parâmetros de verificação: iteraciones e limiar de cobertura (T13, AC-15)."""
