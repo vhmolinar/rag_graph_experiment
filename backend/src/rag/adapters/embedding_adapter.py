@@ -13,14 +13,12 @@ bruta de `data`) e rejeita vetores não finitos antes da persistência.
 
 import asyncio
 import math
-from typing import Self
-from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import SettingsConfigDict
 
-from rag.adapters.model_settings import ModelAuthSettings, ResilienceSettings
+from rag.adapters.model_settings import HttpEndpointSettings
 from rag.adapters.resilience import CircuitBreaker, SleepFn, call_with_resilience
 from rag.domain.errors import (
     ModelResponseError,
@@ -32,8 +30,11 @@ from rag.domain.errors import (
 _DEFAULT_RETRY_AFTER_SECONDS = 60
 
 
-class EmbeddingEndpointSettings(ModelAuthSettings, ResilienceSettings):
-    """Configuração do endpoint de embeddings (SPEC: compatível com OpenAI)."""
+class EmbeddingEndpointSettings(HttpEndpointSettings):
+    """Configuração do endpoint de embeddings (SPEC: compatível com OpenAI).
+
+    Validações de URL e credencial-sobre-https vêm de `HttpEndpointSettings`.
+    """
 
     model_config = SettingsConfigDict(env_prefix="EMBEDDING_", extra="ignore")
 
@@ -48,24 +49,6 @@ class EmbeddingEndpointSettings(ModelAuthSettings, ResilienceSettings):
     # livro inteiro; registrado em `EmbeddingVersion.params` para
     # reprodutibilidade (AC-15).
     batch_size: int = Field(default=64, gt=0)
-
-    @field_validator("base_url")
-    @classmethod
-    def _valid_url(cls, value: str) -> str:
-        parsed = urlparse(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("base_url deve ser uma URL http(s) válida")
-        return value
-
-    @model_validator(mode="after")
-    def _https_required_with_credential(self) -> Self:
-        # T6-04: nunca enviar Authorization: Bearer para um endpoint http:// —
-        # a credencial trafegaria em texto claro numa rede não confiável.
-        if self.api_key.get_secret_value() and not self.base_url.lower().startswith("https://"):
-            raise ValueError(
-                "EMBEDDING_BASE_URL deve usar https:// quando EMBEDDING_API_KEY está definido"
-            )
-        return self
 
 
 def _headers(settings: EmbeddingEndpointSettings) -> dict[str, str]:

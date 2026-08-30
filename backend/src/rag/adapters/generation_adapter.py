@@ -19,10 +19,10 @@ import asyncio
 import json
 
 import httpx
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic_settings import SettingsConfigDict
 
-from rag.adapters.model_settings import ModelAuthSettings, ResilienceSettings
+from rag.adapters.model_settings import HttpEndpointSettings
 from rag.adapters.resilience import CircuitBreaker, SleepFn, call_with_resilience
 from rag.domain.answer import GeneratedAnswer
 from rag.domain.enums import Depth
@@ -43,15 +43,24 @@ _DEPTH_INSTRUCTIONS: dict[Depth, str] = {
 }
 
 
-class GenerationEndpointSettings(ModelAuthSettings, ResilienceSettings):
-    """Configuração do endpoint de geração (SPEC: compatível com OpenAI)."""
+class GenerationEndpointSettings(HttpEndpointSettings):
+    """Configuração do endpoint de geração (SPEC: compatível com OpenAI).
+
+    `POST /chat/completions` NÃO é idempotente (uma nova geração pode
+    consumir recursos e produzir conteúdo diferente para a mesma execução, se
+    a primeira chamada já tiver sido processada). Por isso `max_retries` tem
+    default 0 (SPEC §11: retries apenas para falhas transitórias E operações
+    idempotentes — T7-01). A validação de URL/credencial vem de
+    `HttpEndpointSettings`.
+    """
 
     model_config = SettingsConfigDict(env_prefix="GENERATOR_", extra="ignore")
 
     base_url: str = "http://localhost:8003/v1"
     model: str = "qwen3-instruct"
-    timeout_seconds: float = 60.0
-    deep_timeout_seconds: float = 180.0
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    deep_timeout_seconds: float = Field(default=180.0, gt=0)
+    max_retries: int = Field(default=0, ge=0)
 
 
 def _headers(settings: GenerationEndpointSettings) -> dict[str, str]:

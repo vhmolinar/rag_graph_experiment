@@ -596,3 +596,28 @@ não bloqueantes; podem ser revistas pelo usuário.
    vêm dessa função e só têm acesso a `operation_name`/`error_type`/`attempt`.
    Testado em `test_resilience.py::test_failure_logs_are_free_of_operation_content`
    com `structlog.testing.capture_logs()`.
+9. **Correções da rodada de revisão (REVIEW_T07, 2026-08-30).** Sem mudança de
+   arquitetura; refinamentos para honrar SPEC §11 e AC-14/AC-16 que a
+   implementação anterior não atendia integralmente:
+
+   - **T7-01** — `GenerationEndpointSettings.max_retries` agora tem default `0`.
+     `POST /chat/completions` não é idempotente (retentar pode reexecutar uma
+     geração já processada, consumir recursos e produzir resposta diferente).
+     Retries continuam permitidos para embedding e reranking (idempotentes).
+   - **T7-02** — A regra T6-04 (credencial só sobre `https://`) foi centralizada
+     em `HttpEndpointSettings` e vale para os três endpoints, incluindo
+     generator e reranker. Mensagens de erro não citam chave, URL nem caminho.
+   - **T7-03** — A resposta do reranker é validada por Pydantic
+     (`_RerankItem`/`_RerankResponse`): finitude do score e cardinalidade
+     exata por documento — duplicatas (mesmo para um único documento), lacunas
+     e índices fora do intervalo são rejeitados com `ModelResponseError`.
+   - **T7-04** — `CircuitBreaker` agora limita o estado half-open a UMA probe
+     simultânea (`_probe_in_progress`); chamadas concorrentes durante a probe
+     são rejeitadas até o sucesso/falha da tentativa de teste.
+   - **T7-05** — Validações de limite (timeout `>0`, `max_retries >=0`,
+     `max_concurrency >0`, backoff `>0`, multiplicador `>=1`,
+     `circuit_breaker_failure_threshold >=1`, reset `>0`) e de URL/credencial
+     passaram a falhar na construção dos settings (`ValidationError`
+     previsível), e não depois com erro genérico de `httpx`/`asyncio`.
+     `hide_input_in_errors` evita que o `str()` do `ValidationError` ecoe o
+     caminho do secret file.

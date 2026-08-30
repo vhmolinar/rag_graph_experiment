@@ -1,11 +1,13 @@
 """Contrato HTTP do adapter de geração compatível com OpenAI (T07)."""
 
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from rag.adapters.generation_adapter import (
     GenerationEndpointSettings,
@@ -21,7 +23,7 @@ from rag.domain.errors import (
 )
 from rag.domain.providers import GenerationRequest
 
-_BASE_URL = "http://generator.test/v1"
+_BASE_URL = "https://generator.test/v1"
 
 
 async def _noop_sleep(_seconds: float) -> None:
@@ -32,7 +34,6 @@ def _settings(**overrides: object) -> GenerationEndpointSettings:
     defaults: dict[str, object] = {
         "base_url": _BASE_URL,
         "model": "qwen3-instruct",
-        "max_retries": 0,
     }
     defaults.update(overrides)
     return GenerationEndpointSettings(**defaults)  # type: ignore[arg-type]
@@ -59,6 +60,53 @@ def _request(*, depth: Depth = Depth.STANDARD) -> GenerationRequest:
 
 def _completion_body(payload: dict[str, object]) -> dict[str, object]:
     return {"choices": [{"message": {"content": json.dumps(payload)}}]}
+
+
+class TestGenerationEndpointSettings:
+    """T7-02/T7-05: URL válida, credencial só sobre https e limites de resiliência."""
+
+    def test_http_with_api_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="https"):
+            _settings(base_url="http://generator.test/v1", api_key="segredo-123")
+
+    def test_http_without_api_key_is_accepted(self) -> None:
+        assert _settings().api_key.get_secret_value() == ""
+
+    def test_https_with_api_key_is_accepted(self) -> None:
+        settings = _settings(api_key="segredo-123")
+        assert settings.api_key.get_secret_value() == "segredo-123"
+
+    def test_http_with_api_key_file_is_rejected(self, tmp_path: Path) -> None:
+        # T7-02: a chave lida do secret file também não pode ir por http:// —
+        # garante que a resolução do api_key ocorre antes da checagem de https.
+        secret_file = tmp_path / "gen_key"
+        secret_file.write_text("segredo-123", encoding="utf-8")
+        with pytest.raises(ValidationError, match="https"):
+            _settings(base_url="http://generator.test/v1", api_key_file=secret_file)
+
+    def test_invalid_base_url_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(base_url="not-a-url")
+
+    def test_non_positive_timeout_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(timeout_seconds=0)
+
+    def test_non_positive_deep_timeout_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(deep_timeout_seconds=0)
+
+    def test_negative_max_retries_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(max_retries=-1)
+
+    def test_zero_max_concurrency_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(max_concurrency=0)
+
+    def test_default_max_retries_is_zero(self) -> None:
+        # T7-01: geração NÃO é idempotente — o default não pode retentar.
+        assert _settings().max_retries == 0
 
 
 class TestGenerate:
@@ -140,7 +188,7 @@ class TestGenerate:
 
     @respx.mock
     async def test_timeout_raises_model_timeout_error(self) -> None:
-        respx.post(f"{_BASE_URL}/chat/completions").mock(
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
             side_effect=httpx.TimeoutException("timeout")
         )
         provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
@@ -149,16 +197,21 @@ class TestGenerate:
                 await provider.generate(_request())
         finally:
             await provider.aclose()
+        # T7-01: geração não é idempotente — não retenta (default max_retries=0).
+        assert route.call_count == 1
 
     @respx.mock
     async def test_connection_error_raises_model_unavailable_error(self) -> None:
-        respx.post(f"{_BASE_URL}/chat/completions").mock(side_effect=httpx.ConnectError("recusado"))
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
+            side_effect=httpx.ConnectError("recusado")
+        )
         provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
         try:
             with pytest.raises(ModelUnavailableError):
                 await provider.generate(_request())
         finally:
             await provider.aclose()
+        assert route.call_count == 1
 
     @respx.mock
     async def test_429_raises_rate_limit_error(self) -> None:
@@ -175,13 +228,15 @@ class TestGenerate:
 
     @respx.mock
     async def test_5xx_raises_model_unavailable_error(self) -> None:
-        respx.post(f"{_BASE_URL}/chat/completions").mock(return_value=httpx.Response(503))
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(return_value=httpx.Response(503))
         provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
         try:
             with pytest.raises(ModelUnavailableError):
                 await provider.generate(_request())
         finally:
             await provider.aclose()
+        # T7-01: 5xx (falha transitória) ainda assim não retenta — não idempotente.
+        assert route.call_count == 1
 
     @respx.mock
     async def test_malformed_envelope_raises_model_response_error(self) -> None:

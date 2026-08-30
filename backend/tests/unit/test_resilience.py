@@ -76,6 +76,31 @@ class TestCircuitBreaker:
         breaker.on_success()
         breaker.before_call()  # fechado de novo, sem exceção
 
+    def test_half_open_allows_single_probe_concurrently(self) -> None:
+        # T7-04: enquanto a probe half-open está em andamento, uma segunda
+        # chamada é rejeitada — apenas uma tentativa de teste chega ao endpoint.
+        clock = _FakeClock()
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_seconds=5.0, clock=clock.now)
+        breaker.on_failure()
+        clock.advance(5.0)
+        breaker.before_call()  # primeira probe: permitida e marcada em andamento
+        with pytest.raises(CircuitBreakerOpenError):
+            breaker.before_call()  # segunda probe concorrente: rejeitada
+        breaker.on_success()
+        breaker.before_call()  # após o sucesso, volta a permitir (fechado)
+
+    def test_half_open_probe_cleared_on_failure(self) -> None:
+        clock = _FakeClock()
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_seconds=5.0, clock=clock.now)
+        breaker.on_failure()
+        clock.advance(5.0)
+        breaker.before_call()  # probe 1 em andamento
+        breaker.on_failure()   # probe falha -> abre de novo, limpa a flag
+        with pytest.raises(CircuitBreakerOpenError):
+            breaker.before_call()
+        clock.advance(5.0)
+        breaker.before_call()  # nova probe permitida após novo reset
+
 
 class TestCallWithResilience:
     async def test_success_returns_result(self) -> None:
@@ -205,6 +230,39 @@ class TestCallWithResilience:
                 sleep=_noop_sleep,
             )
         assert calls["count"] == 0
+
+    async def test_half_open_lets_only_one_probe_reach_endpoint(self) -> None:
+        # T7-04: após o reset, apenas UMA chamada (a probe de teste) chega ao
+        # endpoint; a chamada concorrente é rejeitada pelo breaker.
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_seconds=0.0)
+        breaker.on_failure()  # abre o circuito (threshold=1)
+
+        reached = {"count": 0}
+
+        async def op() -> str:
+            reached["count"] += 1
+            await asyncio.sleep(0.05)  # mantém a probe em andamento
+            return "ok"
+
+        async def call() -> str:
+            return await call_with_resilience(
+                lambda: op(),
+                operation_name="test",
+                breaker=breaker,
+                semaphore=asyncio.Semaphore(2),
+                max_retries=0,
+                backoff_seconds=0.01,
+                backoff_multiplier=2.0,
+                sleep=_noop_sleep,
+            )
+
+        # reset_timeout=0: a primeira chamada já sai de OPEN e vira a probe.
+        results = await asyncio.gather(call(), call(), return_exceptions=True)
+        ok_calls = [r for r in results if r == "ok"]
+        rejected = [r for r in results if isinstance(r, CircuitBreakerOpenError)]
+        assert len(ok_calls) == 1
+        assert len(rejected) == 1
+        assert reached["count"] == 1
 
     async def test_concurrency_limit_serializes_calls(self) -> None:
         breaker = CircuitBreaker(failure_threshold=10, reset_timeout_seconds=10.0)
