@@ -13,10 +13,10 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
 | AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); falta o caminho passagem→leitor (T17) |
-| AC-04 | Busca literal encontra frases exatas em português | ⬜ | T08/T19 |
+| AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
-| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos) |
+| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (exclusão por termo/edição/obra aplicada no estágio lexical, contra PostgreSQL real). Falta o estágio vetorial/RRF (T09) e reranking/geração (T13) |
 | AC-08 | Modo quote sem texto sintetizado | ◐ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo) |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
@@ -653,6 +653,106 @@ precisará de ajuste; geração não cobre streaming (T14); nenhum destes adapte
 ainda conectado a um pipeline de recuperação/geração real (T08–T13 os consomem via os
 Protocols de `rag.domain.providers`, já satisfeitos hoje pelos adapters HTTP e pelos
 doubles).
+
+### T08 — Busca lexical em português ✅
+
+Nenhuma dependência nova; nenhuma migration nova (reaproveita `text_search` e o
+índice GIN de FTS já criados na migration 0001 de T03). Interpretações
+declaradas em NOTES.md §10.9 antes de implementar: `LexicalQuery` estruturada
+em vez de mini-linguagem em string (interpretar a pergunta é T10, fora do
+escopo declarado desta tarefa); `required_terms`/`excluded_terms` são
+obrigatoriamente palavras isoladas (`phrase` cobre múltiplas palavras);
+tolerância trigram compara o termo contra cada palavra da passagem
+(`unnest`), não contra o texto inteiro (comparação contra o texto inteiro
+dilui a similaridade e não recupera nada em passagens reais — só funcionava
+em frases de teste artificialmente curtas); esse caminho não usa
+`passages_text_trgm_gin` (scan sequencial das linhas já filtradas —
+calibração de desempenho é ponto para T19); passagens-pai nunca são
+candidatas (anunciado em NOTES.md §10.6 item 2); retorno reaproveita
+`RankedCandidate`/`RankingStage.LEXICAL` (já existentes em `domain/runs.py`)
+em vez de um tipo novo, entregando o formato que T09 (RRF) consome.
+
+Entregáveis:
+
+- **`LexicalQuery`** (`domain/query.py`): `phrase: str | None` (frase exata),
+  `required_terms`/`excluded_terms: tuple[str, ...]` (palavras isoladas — AND/
+  NOT) e `trigram_threshold: float` (0–1, padrão 0.3); validações: frase ou
+  ao menos um termo obrigatório é exigido; termo vazio ou com espaço/pontuação
+  é rejeitado (`term.isalnum()`); termo não pode ser obrigatório e excluído ao
+  mesmo tempo.
+- **`LexicalSearchRepository`** (`infrastructure/repositories/search.py`,
+  método `search(query, *, filters=EditionFilter(), limit=20)`): combina, via
+  parâmetros ligados, `phraseto_tsquery`/`plainto_tsquery` sobre a
+  configuração `portuguese_unaccent` (frase exata + termos obrigatórios,
+  unidos por `&&` de tsquery — nunca concatenação de string) com negação
+  (`NOT ... plainto_tsquery`) para termos excluídos; tolerância trigram por
+  termo obrigatório via `OR max(similarity(palavra, termo)) >= limiar` sobre
+  as palavras da passagem; filtros por edição/obra (reaproveita `EditionFilter`
+  de T02, com `JOIN editions` só quando há filtro por obra); exclui
+  passagens-pai (`embedding_version_id IS NOT NULL`); ordena por
+  `ts_rank_cd` do tsquery combinado, com a soma das maiores similaridades por
+  termo como critério de desempate (acertos exatos sempre antes de
+  aproximados, já que só estes têm `ts_rank_cd = 0`). Devolve
+  `list[RankedCandidate]` (`stage=LEXICAL`, `rank` = posição, `score` =
+  `ts_rank_cd`).
+
+Testes/evidências (todos em `test_lexical_search.py`, integração contra
+PostgreSQL real via testcontainers):
+
+- normalização de acentos: `test_accent_insensitive_required_term` (consulta
+  acentuada e sem acento encontram a mesma passagem);
+- flexão via stemming: `test_stemming_matches_inflected_form` ("amor"
+  encontra "amores");
+- frase exata (AC-04): `test_exact_phrase_requires_contiguous_words` (frase
+  contígua corresponde; ordem trocada não corresponde a nada);
+- termos obrigatórios conjuntivos: `test_required_terms_are_conjunctive`;
+- termos excluídos exercitados no SQL (AC-07): `test_excluded_terms_are_enforced_in_sql`
+  (passagem com termo excluído nunca retorna, mesmo cumprindo os demais
+  critérios);
+- tolerância trigram configurável: `test_trigram_tolerance_finds_typo` (erro
+  de digitação de uma letra recupera a passagem em limiar 0.3, mas não em
+  0.9); `test_exact_fts_hit_outranks_fuzzy_only_hit` (acerto exato sempre
+  ordenado antes de acerto só por tolerância, com `score` 0 para este
+  último);
+- passagem-pai nunca é candidata: `test_parent_passages_are_never_candidates`;
+- filtros por edição e por obra (AC-07): `test_filter_by_edition`,
+  `test_filter_by_work`;
+- consultas parametrizadas / sem interpolação em SQL: `test_malformed_required_term_is_rejected_before_reaching_sql`
+  (entrada tipo SQL-injection em `required_terms` é rejeitada pela validação
+  de domínio antes de qualquer SQL), `test_repository_never_interpolates_user_text_into_sql`
+  (prova no nível do repository — `LexicalQuery.model_construct` contorna
+  deliberadamente os validators para garantir que o mesmo texto hostil não
+  produz SQL executável nem altera a contagem de linhas de `passages`),
+  `test_phrase_with_sql_and_operator_characters_is_literal_text` (`phrase`
+  aceita texto livre; aspas/`|`/`!` nunca são interpretados como operador de
+  SQL ou de tsquery);
+- resultado vazio é lista vazia, nunca erro: `test_no_results_returns_empty_list`.
+
+Comandos executados em 2026-08-29:
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK |
+| `uv run ruff format --check src tests` | OK — 83 arquivos |
+| `uv run mypy src tests` | OK — 83 arquivos |
+| `uv run pytest tests/unit -q` | OK — 331 passed, 3 skipped |
+| `uv run pytest tests/integration -q` | OK — 117 passed, 1 skipped (PostgreSQL real via testcontainers) |
+| `bash scripts/audit.sh` | OK — 0 vulnerabilidades (pip-audit --strict) |
+| `python3 scripts/security_scan.py .` | OK — nenhum IOC bloqueado |
+
+Critérios: AC-04 (busca literal encontra frase exata em português — coberto
+integralmente pelo estágio lexical); AC-07 (exclusão por termo/edição/obra
+comprovada no estágio lexical; estágios vetorial/RRF (T09) e
+reranking/geração (T13) ainda faltam para a cobertura completa do critério).
+
+Limitações conhecidas: a tolerância trigram usa um scan sequencial
+palavra-a-palavra sobre as linhas já filtradas (não usa o índice GIN de T03,
+construído sobre o texto inteiro) — aceitável para o corpus de fase 1;
+calibração de desempenho em bibliotecas grandes é ponto para o benchmark de
+T19 (NOTES.md §4); `required_terms`/`excluded_terms` só aceitam uma palavra
+alfanumérica cada (sem hífen, apóstrofo ou acento de pontuação composta) —
+suficiente para o vocabulário exercitado nesta tarefa, mas uma limitação a
+revisitar se o planejador (T10) precisar repassar termos com esses caracteres.
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

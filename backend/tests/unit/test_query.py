@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.domain.enums import AnswerMode, Intent, SearchStrategy
-from rag.domain.query import EditionFilter, QueryPlan, QueryRequest
+from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan, QueryRequest
 
 
 class TestQueryRequest:
@@ -59,6 +59,53 @@ class TestEditionFilter:
     def test_empty_filter(self) -> None:
         assert EditionFilter().is_empty()
         assert not EditionFilter(exclude_edition_ids=frozenset({uuid4()})).is_empty()
+
+
+class TestLexicalQuery:
+    def test_requires_phrase_or_required_terms(self) -> None:
+        with pytest.raises(ValidationError, match="frase exata ou ao menos um termo"):
+            LexicalQuery()
+
+    def test_phrase_alone_is_valid(self) -> None:
+        query = LexicalQuery(phrase="dom casmurro")
+        assert query.required_terms == ()
+
+    def test_required_terms_alone_is_valid(self) -> None:
+        query = LexicalQuery(required_terms=("capitu", "bentinho"))
+        assert query.phrase is None
+
+    def test_blank_term_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="não pode ser vazio"):
+            LexicalQuery(required_terms=("  ",))
+
+    def test_multi_word_term_rejected(self) -> None:
+        """Sequências de várias palavras pertencem ao campo `phrase`, não a
+        `required_terms`/`excluded_terms` (cada termo é uma única palavra)."""
+        with pytest.raises(ValidationError, match="única palavra alfanumérica"):
+            LexicalQuery(required_terms=("dom casmurro",))
+
+    def test_punctuation_in_term_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="única palavra alfanumérica"):
+            LexicalQuery(required_terms=("ciume!",))
+
+    def test_same_term_required_and_excluded_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="obrigatório e excluído"):
+            LexicalQuery(required_terms=("ciume",), excluded_terms=("ciume",))
+
+    def test_trigram_threshold_bounds(self) -> None:
+        with pytest.raises(ValidationError):
+            LexicalQuery(required_terms=("ciume",), trigram_threshold=1.5)
+        with pytest.raises(ValidationError):
+            LexicalQuery(required_terms=("ciume",), trigram_threshold=-0.1)
+
+    def test_default_threshold(self) -> None:
+        query = LexicalQuery(required_terms=("ciume",))
+        assert query.trigram_threshold == 0.3
+
+    def test_frozen(self) -> None:
+        query = LexicalQuery(required_terms=("ciume",))
+        with pytest.raises(ValidationError):
+            query.required_terms = ("outro",)
 
 
 class TestQueryPlan:

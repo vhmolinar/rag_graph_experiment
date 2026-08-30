@@ -540,3 +540,78 @@ não bloqueantes; podem ser revistas pelo usuário.
    vêm dessa função e só têm acesso a `operation_name`/`error_type`/`attempt`.
    Testado em `test_resilience.py::test_failure_logs_are_free_of_operation_content`
    com `structlog.testing.capture_logs()`.
+
+### 10.9 Registro do implementador — 2026-08-29 (fase 1, T08)
+
+Interpretações declaradas antes de implementar T08 (busca lexical em
+português), não bloqueantes; podem ser revistas pelo usuário.
+
+1. **`LexicalQuery` é estruturada (campos explícitos), não uma mini-
+   linguagem de busca em string única.** A especificação (§8.4) pede
+   "suportar frase exata, termos obrigatórios e termos excluídos" como
+   capacidades, não uma sintaxe (`+termo`/`-termo`/`"frase"`) para o usuário
+   digitar. Interpretar a pergunta em linguagem natural e produzir essa
+   estrutura é responsabilidade do planejador (T10, que também produz
+   `QueryPlan.lexical_query: str` de T02) — fora do escopo declarado de
+   T08 (dependências: T03, T06, não T02/T10). `LexicalQuery` (`domain/query.py`)
+   tem `phrase: str | None`, `required_terms`/`excluded_terms: tuple[str, ...]`
+   e `trigram_threshold: float`, ao lado de `EditionFilter` (já existente
+   desde T02) na mesma responsabilidade de "Contratos de consulta".
+2. **`required_terms`/`excluded_terms` são obrigatoriamente palavras
+   isoladas** (`term.isalnum()`; validado em `LexicalQuery`) — sequências de
+   várias palavras pertencem ao campo `phrase`. Não é só estilo: a
+   tolerância trigram (item 3) compara cada termo contra cada PALAVRA da
+   passagem; um termo multi-palavra compararia sua string inteira
+   (incluindo espaços/pontuação) contra palavras isoladas do documento, o
+   que quase sempre produz falsos positivos por coincidência de
+   subsequência (ex.: o termo composto "ciume | bentinho !" tem
+   similaridade trigram de 0.4 contra a palavra isolada "ciume" só por
+   conter esse substring, vazando pela tolerância mesmo sem o termo
+   "bentinho" estar presente). Restringir a uma palavra por termo elimina
+   essa ambiguidade por construção.
+3. **Tolerância trigram compara o termo contra cada palavra da passagem
+   (`unnest(regexp_split_to_array(...))`), nunca contra o texto inteiro.**
+   Tentativa inicial usou `similarity(rag_immutable_unaccent(text), termo)`
+   direto (mesmo padrão do teste de plano de consulta de T03,
+   `test_index_usage.py::test_trgm_similarity_query_uses_gin_index`) — mas
+   esse teste só prova que o índice é utilizável, nunca que a correspondência
+   é semanticamente correta. Na prática, a similaridade de Jaccard entre um
+   termo curto e um texto de várias frases é diluída pelos trigramas de
+   todas as outras palavras e fica sempre baixa, mesmo com o termo presente
+   quase idêntico em uma única palavra — tolerância a erro de digitação não
+   funcionava em nenhum limiar razoável contra passagens reais (só contra
+   frases de teste artificialmente curtas). A comparação palavra-a-palavra
+   corrige isso, mas **não usa `passages_text_trgm_gin`** (índice de T03,
+   construído sobre o texto inteiro): é sempre um scan sequencial das linhas
+   já filtradas pelas demais condições (FTS/filtros). Calibração de
+   desempenho em corpora grandes é um ponto para o benchmark de T19
+   (NOTES.md §4), não bloqueante para a correção demonstrada aqui.
+4. **Passagens-pai nunca são candidatas** (`WHERE p.embedding_version_id IS
+   NOT NULL`), conforme anunciado em NOTES.md §10.6 item 2 ("filtrar pais
+   fora da busca vetorial/lexical é responsabilidade de T08/T09"). Só
+   chunks-filho (unidades citáveis diretas) são recuperáveis.
+5. **Nenhuma migration nova.** `text_search` (tsvector gerado) e o índice
+   GIN sobre ele já existem desde a migration 0001 (T03); `LexicalSearchRepository`
+   só compõe SQL parametrizado sobre schema existente.
+6. **Retorno é `list[RankedCandidate]` (já existente em `domain/runs.py`,
+   `stage=RankingStage.LEXICAL`), não um tipo novo.** T09 (RRF) consome
+   exatamente essa forma para fundir com a lista vetorial — entregar o
+   formato de consumo final agora evita um mapeamento redundante depois.
+   `rank` é a posição na lista (0-based); `score` é `ts_rank_cd` do tsquery
+   combinado (frase && termos obrigatórios) — 0.0 para acertos só por
+   tolerância trigram (nenhum lexema exato contribui peso), o que já ordena
+   corretamente acertos exatos antes de aproximados sem lógica extra
+   (`ORDER BY score DESC, fuzzy_score DESC`, onde `fuzzy_score` desempata
+   entre os aproximados pela soma das maiores similaridades por termo).
+7. **Nenhuma interpolação de texto do usuário em SQL nem em sintaxe de
+   tsquery.** Frase e cada termo são sempre parâmetros ligados
+   (`%(nome)s`), processados por `phraseto_tsquery`/`plainto_tsquery` (que
+   tratam a entrada como texto puro — nunca interpretam `&`/`|`/`!`/`<->`
+   como operador) e por `similarity()`. Os únicos fragmentos de texto
+   interpolados na string SQL são nomes de coluna/tabela fixos e chaves de
+   parâmetro previsíveis geradas a partir do ÍNDICE da lista
+   (`required_0`, `required_1`, ...) — nunca do conteúdo do termo — mesmo
+   padrão de `VersionsRepository` (T03). `test_repository_never_interpolates_user_text_into_sql`
+   (integração) contorna deliberadamente os validators de domínio
+   (`LexicalQuery.model_construct`) para provar essa propriedade no nível
+   do repository, não só por rejeição antecipada da validação.

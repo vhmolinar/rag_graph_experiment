@@ -69,6 +69,61 @@ class QueryRequest(BaseModel):
         )
 
 
+MAX_LEXICAL_TERM_LENGTH = 200
+MAX_LEXICAL_TERMS = 50
+
+
+class LexicalQuery(BaseModel):
+    """Consulta lexical estruturada (SPEC §8.4).
+
+    Estruturada em vez de uma mini-linguagem em string única: mantém a
+    responsabilidade de interpretar a pergunta do usuário no planejador
+    (T10), que ainda não existe nesta tarefa. `phrase` exige correspondência
+    exata e contígua; `required_terms` são obrigatórios (AND, com
+    tolerância trigram individual); `excluded_terms` nunca podem aparecer.
+    Nenhum campo aqui é interpolado como SQL — cada termo vira um parâmetro
+    ligado separado na consulta (`LexicalSearchRepository`).
+    """
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    phrase: str | None = Field(default=None, min_length=1, max_length=MAX_QUESTION_LENGTH)
+    required_terms: tuple[str, ...] = Field(default_factory=tuple, max_length=MAX_LEXICAL_TERMS)
+    excluded_terms: tuple[str, ...] = Field(default_factory=tuple, max_length=MAX_LEXICAL_TERMS)
+    trigram_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _terms_are_single_words(self) -> Self:
+        """`required_terms`/`excluded_terms` são palavras isoladas (AND/NOT);
+        sequências de várias palavras pertencem ao campo `phrase`. Também
+        garante, por construção, que a tolerância trigram (que compara o
+        termo contra cada palavra da passagem) nunca compara um termo
+        multi-palavra contra uma única palavra do documento."""
+        for term in (*self.required_terms, *self.excluded_terms):
+            if not term:
+                raise ValueError("termo lexical não pode ser vazio")
+            if len(term) > MAX_LEXICAL_TERM_LENGTH:
+                raise ValueError(f"termo lexical excede {MAX_LEXICAL_TERM_LENGTH} caracteres")
+            if not term.isalnum():
+                raise ValueError(
+                    "termo lexical deve ser uma única palavra alfanumérica "
+                    "(sem espaços ou pontuação); frases usam o campo 'phrase'"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _at_least_one_criterion(self) -> Self:
+        if not self.phrase and not self.required_terms:
+            raise ValueError("consulta lexical exige frase exata ou ao menos um termo obrigatório")
+        return self
+
+    @model_validator(mode="after")
+    def _required_and_excluded_disjoint(self) -> Self:
+        if set(self.required_terms) & set(self.excluded_terms):
+            raise ValueError("termo não pode ser obrigatório e excluído ao mesmo tempo")
+        return self
+
+
 class QueryPlan(BaseModel):
     """Plano validado produzido pelo planejador (SPEC §8.2).
 
