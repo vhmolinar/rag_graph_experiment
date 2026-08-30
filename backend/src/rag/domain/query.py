@@ -124,21 +124,48 @@ class LexicalQuery(BaseModel):
         return self
 
 
+class StrategyExplanation(BaseModel):
+    """Explicação estruturada da estratégia selecionada (SPEC §8.3, T10).
+
+    `requested` é o que o usuário pediu (pode ser `automatic`); `chosen` é a
+    estratégia RESOLVIDA registrada em `QueryPlan.strategy`. `intent_signals`
+    lista os sinais que guiaram a escolha; `rationale` é texto curto em
+    português, apto a exibição na interface.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    requested: SearchStrategy
+    chosen: SearchStrategy = Field(...)
+    intent_signals: tuple[str, ...] = Field(default_factory=tuple, max_length=20)
+    rationale: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def _chosen_is_resolved(self) -> Self:
+        if self.chosen is SearchStrategy.AUTOMATIC:
+            raise ValueError(
+                "StrategyExplanation.chosen deve ser a estratégia resolvida, nunca 'automatic'"
+            )
+        return self
+
+
 class QueryPlan(BaseModel):
     """Plano validado produzido pelo planejador (SPEC §8.2).
 
     `strategy` é sempre a estratégia RESOLVIDA: quando o request pede
     `automatic`, o planejador escolhe uma das outras três e registra a
-    justificativa (SPEC §8.3).
+    justificativa estruturada em `strategy_explanation` (SPEC §8.3).
+    `lexical_query` é a consulta lexical estruturada (T08) directamente
+    executável por `RetrievalService`.
     """
 
     model_config = ConfigDict(frozen=True)
 
     intent: Intent
-    lexical_query: str = Field(min_length=1, max_length=MAX_QUESTION_LENGTH)
+    lexical_query: LexicalQuery
     semantic_query: str = Field(min_length=1, max_length=MAX_QUESTION_LENGTH)
     strategy: SearchStrategy
-    justification: str = Field(min_length=1, max_length=2000)
+    strategy_explanation: StrategyExplanation
     subquestions: tuple[str, ...] = Field(default_factory=tuple, max_length=MAX_SUBQUESTIONS)
     aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     concept_labels: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
@@ -152,4 +179,6 @@ class QueryPlan(BaseModel):
             raise ValueError(
                 "QueryPlan.strategy deve ser a estratégia resolvida, nunca 'automatic'"
             )
+        if self.strategy_explanation.chosen is not self.strategy:
+            raise ValueError("strategy_explanation.chosen deve coincidir com QueryPlan.strategy")
         return self

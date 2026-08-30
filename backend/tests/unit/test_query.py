@@ -6,7 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from rag.domain.enums import AnswerMode, Intent, SearchStrategy
-from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan, QueryRequest
+from rag.domain.query import (
+    EditionFilter,
+    LexicalQuery,
+    QueryPlan,
+    QueryRequest,
+    StrategyExplanation,
+)
 
 
 class TestQueryRequest:
@@ -115,12 +121,20 @@ class TestQueryPlan:
         subquestions: list[str] | None = None,
         needs_diversity: bool = False,
     ) -> QueryPlan:
+        requested = (
+            strategy if strategy is not SearchStrategy.AUTOMATIC else SearchStrategy.AUTOMATIC
+        )
         return QueryPlan(
             intent=Intent.FACTUAL,
-            lexical_query="spleen",
+            lexical_query=LexicalQuery(required_terms=("spleen",)),
             semantic_query="tédio existencial",
             strategy=strategy,
-            justification="consulta factual curta",
+            strategy_explanation=StrategyExplanation(
+                requested=requested,
+                chosen=strategy,
+                intent_signals=("intenção=factual",),
+                rationale="consulta factual curta",
+            ),
             subquestions=tuple(subquestions or ()),
             needs_diversity=needs_diversity,
         )
@@ -130,6 +144,26 @@ class TestQueryPlan:
         with pytest.raises(ValidationError, match="automatic"):
             self._plan(strategy=SearchStrategy.AUTOMATIC)
 
+    def test_lexical_query_is_structured(self) -> None:
+        """T10: `lexical_query` é uma `LexicalQuery` directamente executável."""
+        plan = self._plan()
+        assert isinstance(plan.lexical_query, LexicalQuery)
+        assert plan.lexical_query.required_terms == ("spleen",)
+
+    def test_strategy_explanation_must_match_plan_strategy(self) -> None:
+        with pytest.raises(ValidationError, match="coincidir"):
+            QueryPlan(
+                intent=Intent.FACTUAL,
+                lexical_query=LexicalQuery(required_terms=("spleen",)),
+                semantic_query="spleen",
+                strategy=SearchStrategy.HYBRID,
+                strategy_explanation=StrategyExplanation(
+                    requested=SearchStrategy.AUTOMATIC,
+                    chosen=SearchStrategy.LITERAL,
+                    rationale="discrepante",
+                ),
+            )
+
     def test_subquestions_limited(self) -> None:
         with pytest.raises(ValidationError):
             self._plan(subquestions=["q"] * 6)
@@ -138,3 +172,4 @@ class TestQueryPlan:
         plan = self._plan(needs_diversity=True)
         assert plan.needs_diversity
         assert plan.inferred_filters.is_empty()
+        assert plan.strategy_explanation.chosen is SearchStrategy.HYBRID

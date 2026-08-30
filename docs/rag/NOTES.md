@@ -682,3 +682,72 @@ reranking), não bloqueantes; podem ser revistas pelo usuário.
    uma passagem que domina a fusão RRF (alta em ambos os estágios) mas é
    superada no reranking por outra com mais termos da consulta — a inversão
    de ordem é observável e reproduzível.
+
+### 10.11 Registro do implementador — 2026-08-30 (fase 1, T10)
+
+Interpretações declaradas antes de implementar T10 (planejador de consulta),
+não bloqueantes; podem ser revistas pelo usuário.
+
+1. **`QueryPlan.lexical_query` passa de `str` para `LexicalQuery`.** O campo
+   de T02 era um espaço reservado antes de T08 definir a consulta lexical
+   estruturada (`LexicalQuery`); `RetrievalService.retrieve` (T09) já consome
+   `LexicalQuery`, e NOTES.md §10.9 item 1 atribui ao planejador "interpretar a
+   pergunta e produzir essa estrutura". Um `QueryPlan` com a consulta
+   estruturada é directamente executável por `RetrievalService` sem
+   reconstrução. Testes de T02 (`test_query.py::TestQueryPlan`) atualizados.
+2. **`QueryPlan.justification` é substituida por
+   `strategy_explanation: StrategyExplanation`.** T10 exige "explicação
+   estruturada da estratégia selecionada" — um string livre não é uma
+   explicação estruturada. `StrategyExplanation` (definida em `domain/query.py`)
+   registra `requested` (o que o usuário pediu), `chosen` (resolvida),
+   `intent_signals` e `rationale` (texto em português). `justification` não é
+   usado em nenhum outro lugar além de `QueryPlan`/`test_query.py`.
+3. **Classificação de intenção e resolução de estratégia são determinísticas
+   no domínio (heurísticas léxicas em português), não chamadas ao modelo.** O
+   planejador não depende de um modelo para decidir intenção/estratégia —
+   comportamento reproduzível e testável sem rede. A chamada ao modelo (novo
+   contrato `PlannerProvider` em `domain/providers.py`) fica reservada à
+   "geração limitada de subperguntas/aliases" (estratégia `expanded`) e a uma
+   sugestão opcional de `semantic_query`.
+4. **`PlannerProvider` é um contrato novo (não reusa `GeneratorProvider`).**
+   `GenerationRequest` exige `evidences` (min_length=1) e `scope_description`
+   — não cabe a fase de planejamento, que não tem evidências. `PlanningRequest`/
+   `PlannedQuery`/`PlannerProvider` definem o contrato; o adapter
+   `OpenAiCompatiblePlannerProvider` (`adapters/planner_adapter.py`) usa o
+   mesmo contrato HTTP compatível com OpenAI (JSON mode) e a mesma resiliência
+   de T07 (`call_with_resilience`).
+5. **`needs_diversity`/`needs_hierarchical` derivados da intenção.** factual →
+   diversidade falsa (maximiza relevância, SPEC §8.6); comparative/conceituais
+   amplas → diversidade verdadeira (limite flexível por edição — a execução de
+   montagem de contexto em T12 aplica o limite flexível, nunca uma quota
+   cega); conceptual/comparative → `needs_hierarchical` verdadeiro (índice
+   hierárquico de T11); factual/navigational → falso.
+6. **Filtros naturais: menções sem polaridade clara NÃO são inferidas
+   (ambigüidade não é aplicada silenciosamente).** O planejador só infera
+   `include_*`/`exclude_*` quando a polaridade é explícita por sinais léxicos
+   ("só", "somente", "apenas", "no"(=em o), "na"(=em a), "em", "incluindo",
+   "considerando" para inclusão; "exceto", "excepto", "salvo", "menos", "sem",
+   "excluindo", "fora de" para exclusão). Uma menção sem sinais de polaridade
+   (ex.: "quem escreveu Dom Casmurro?") não entra em `inferred_filters` — não
+   se adivina um filtro. Se a mesma obra receber polaridades conflitantes, a
+   menção é descartada inteira (ambigua, não aplicada).
+7. **Prioridade de filtros explícitos é função pura `merge_filters(explicit,
+   inferred)` no domínio.** SPEC §8.2: "entradas inferidas nunca substituem
+   filtros explícitos; exclusões explícitas prevalecem sobre inclusões
+   inferidas" (e simétrico). A função une os conjuntos e remove do lado oposto
+   os IDs decididos explicitamente; o resultado respeita as invariantes de
+   `EditionFilter` (nunca o mesmo ID em include e exclude). A chamada à
+   `RetrievalService` (futura T12/T13) recebe o filtro efetivo fundido.
+8. **Resolução de filtros naturais opera por título de obra (nível obra).** O
+   catálogo mapeia título canônico normalizado → `CatalogEntry(work_id, título,
+   edition_ids)`; menções com polaridade resolvem a `include_work_ids`/
+   `exclude_work_ids`. Os `edition_ids` ficam disponíveis para uma resolução de
+   nível edição futura (API/UI) — fora do escopo declarado de T10.
+9. **`build_lexical_query` extrai palavras de conteúdo da pergunta
+   (português), sem mini-linguagem e sem modelo.** Stopwords, palavras de
+   pergunta e substantivos genéricos ("livro", "obra", "capítulo") são
+   removidos; as palavras restantes viram `required_terms` (AND) com
+   `trigram_threshold` padrão 0.3. É heurística calibrable (NOTES.md §4), não
+   um analizador morfológico. Se não sobrar palavras de conteúdo, a consulta
+   cai para `phrase` = pergunta inteira (raro corresponder; o estágio
+   semântico continua funcionando).

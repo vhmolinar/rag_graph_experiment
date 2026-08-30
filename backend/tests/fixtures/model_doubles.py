@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 
 from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
-from rag.domain.providers import GenerationRequest
+from rag.domain.providers import GenerationRequest, PlannedQuery, PlanningRequest
 
 
 def _deterministic_vector(text: str, dimensions: int) -> list[float]:
@@ -150,6 +150,45 @@ def _default_answer(request: GenerationRequest) -> GeneratedAnswer:
         limitations=(),
         abstained=False,
         abstention_reason=None,
+    )
+
+
+class FakePlannerProvider:
+    """Double de `PlannerProvider`: sugestão determinística.
+
+    Por padrão produz uma consulta semântica igual à pergunta, uma subpergunta
+    derivada e aliases das palavras da pergunta. Aceita uma fábrica customizada
+    para exercitar outros casos (subperguntas limitadas, sugestão ausente) e uma
+    fila de exceções para simular falhas transitórias.
+    """
+
+    def __init__(
+        self,
+        *,
+        suggestion_factory: Callable[[PlanningRequest], PlannedQuery] | None = None,
+        fail_with: Sequence[Exception] = (),
+    ) -> None:
+        self._suggestion_factory = suggestion_factory or _default_suggestion
+        self._pending_failures: deque[Exception] = deque(fail_with)
+        self.requests: list[PlanningRequest] = []
+
+    def _maybe_fail(self) -> None:
+        if self._pending_failures:
+            raise self._pending_failures.popleft()
+
+    async def plan(self, request: PlanningRequest) -> PlannedQuery:
+        self._maybe_fail()
+        self.requests.append(request)
+        return self._suggestion_factory(request)
+
+
+def _default_suggestion(request: PlanningRequest) -> PlannedQuery:
+    words = sorted(set(re.findall(r"\w+", request.question.lower())))
+    return PlannedQuery(
+        semantic_query=request.question,
+        subquestions=(f"{request.question} (subpergunta)",),
+        aliases=tuple(words[:3]),
+        concept_labels=(),
     )
 
 

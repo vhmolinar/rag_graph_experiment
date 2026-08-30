@@ -16,13 +16,13 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
-| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker). Falta o estágio de geração/verificação (T13) |
+| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita; ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`. Falta o estágio de geração/verificação (T13) |
 | AC-08 | Modo quote sem texto sintetizado | ◐ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo) |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
-| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ⬜ | T10/T12/T13 |
+| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada). Execução da diversidade/limite flexível na montagem de contexto e declaração de limitação: T12/T13 |
 | AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
-| AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
+| AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
@@ -856,6 +856,123 @@ recuperação ainda não está conectado à geração/contexto (T12/T13), que
 consumirão `RetrievalResult`/`RetrievalService`; os testes de integração foram
 executados neste ambiente via podman (sem Docker) com ryuk desativado —
 equivalente em Docker requere o mesmo fluxo de `testcontainers`.
+
+### T10 — Planejador de consulta ✅
+
+Nenhuma dependência nova; nenhuma migration nova. Interpretações registradas
+em NOTES.md §10.11 antes de implementar: `QueryPlan.lexical_query` passa de
+`str` para `LexicalQuery` (a consulta estruturada de T08 é directamente
+executável por `RetrievalService`); `QueryPlan.justification` é substituida
+por `strategy_explanation: StrategyExplanation` (explicação estruturada da
+estratégia); classificação de intenção e resolução de estratégia são
+determinísticas no domínio (heurísticas léxicas em português, sem modelo);
+`PlannerProvider` é contrato novo (a `GenerationRequest` exige evidências,
+que não existem na fase de planejamento); `needs_diversity`/
+`needs_hierarchical` derivados da intenção; filtros naturais só inferam
+menções com polaridade explícita (ambigüidade não é aplicada silenciosamente);
+prioridade de filtros explícitos via `merge_filters` puro; resolução de
+filtros naturais por título de obra; `build_lexical_query` extrai palavras de
+conteúdo (heurística calibrable).
+
+Entregáveis:
+
+- **Núcleo determinístico** (`domain/planning.py`): `classify_intent`
+  (factual/conceitual/comparativa/navegacional); `build_lexical_query`
+  (palavras de conteúdo → `required_terms`, com fallback a `phrase`);
+  `build_semantic_query`; `resolve_strategy` (explícita respeitada;
+  `automatic` → factual:hybrid, conceitual:expanded, comparativa:expanded,
+  navegacional:literal) com `StrategyExplanation` estruturada
+  (`requested`/`chosen`/`intent_signals`/`rationale`); `diversity_for`/
+  `hierarchical_for` (factual: sem diversidade — maximiza relevância §8.6;
+  comparativa/conceitual: diversidade verdadeira e índice hierárquico);
+  `CatalogEntry`; `resolve_natural_filters` (menções com polaridade explícita
+  por sinais léxicos, nível obra; menção ambígua ou com polaridades
+  conflitantes NUNCA aplicada silenciosamente); `merge_filters` (prioridade
+  de filtros explícitos — exclusões explícitas prevalecem sobre inclusões
+  inferidas e simétrico, SPEC §8.2).
+- **`QueryPlan` evoluído** (`domain/query.py`): `lexical_query: LexicalQuery`,
+  `strategy_explanation: StrategyExplanation` (consistente com `strategy` por
+  validador); `StrategyExplanation` definida aqui para evitar import circular.
+- **Contrato de provedor de planejamento** (`domain/providers.py`):
+  `PlanningRequest`/`PlannedQuery` (subperguntas limitadas a 5, aliases a 50,
+  rótulos a 50 — validador de contrato) e `PlannerProvider` (Protocol).
+- **`PlannerService`** (`application/planning.py`): compone o núcleo
+  determinístico com a geração limitada de subperguntas/aliases (provedor só
+  na `expanded`) e o catálogo real de obras (título canônico normalizado →
+  `CatalogEntry`). Produz um `QueryPlan` validado com estratégia RESOLVIDA e
+  filtros inferidos.
+- **Adapter HTTP** (`adapters/planner_adapter.py`,
+  `OpenAiCompatiblePlannerProvider`): `POST /chat/completions` compatível com
+  OpenAI, JSON mode, com a resiliência de T07 (`call_with_resilience`) e
+  autenticação por ambiente/secret file.
+- **Double** (`tests/fixtures/model_doubles.py::FakePlannerProvider`):
+  sugestão determinística com fábrica customizada e fila de exceções.
+
+Testes/evidências:
+
+- perguntas factuais, conceituais, comparativas e navegacionais:
+  `test_planning.py::TestClassifyIntent` (4 intenções × 2 frases cada);
+- inclusão/exclusão ambígua não é aplicada silenciosamente:
+  `test_planning.py::test_ambiguous_mention_is_not_silently_applied`,
+  `test_comparative_mention_without_filter_is_not_applied`,
+  `test_conflicting_polarity_is_dropped`,
+  `test_word_level_cue_matching_avoids_substring_false_positive`;
+  `test_planner_service.py::test_ambiguous_mention_is_not_inferred`;
+  `test_planning_pipeline.py::test_ambiguous_mention_is_not_silently_applied`
+  (contra PostgreSQL real);
+- factual privilegia relevância: `test_planning.py::TestAdaptiveDiversity`
+  (factual → diversidade falsa), `test_planner_service.py::test_factual_prioritizes_relevance`
+  (factual → hybrid, sem diversidade);
+- comparativa busca cobertura sem inserir fonte irrelevante:
+  `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade
+  verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage`;
+- prioridade de filtros explícitos: `test_planning.py::TestMergeFilters`
+  (exclusão explícita > inclusão inferida; inclusão explícita > exclusão
+  inferida; união de disjuntos; nunca include∩exclude);
+- geração limitada de subperguntas/aliases: `test_planner_service.py::test_expanded_calls_provider_and_carries_suggestion`,
+  `test_literal_does_not_call_provider`; contrato `PlannedQuery` rejeita >5
+  subperguntas (`test_planner_adapter.py::test_subquestions_over_limit_raises_model_response_error`);
+- falha do provedor propagha fechada: `test_planner_service.py::test_provider_failure_propagates_fail_closed`;
+- contrato HTTP do adapter: 9 testes em `test_planner_adapter.py` (respx —
+  sucesso, autenticação Bearer, timeout, erro de conexão, 429 com
+  `Retry-After`, 5xx, payload malformado, conteúdo não-JSON, violação de
+  contrato);
+- integração contra PostgreSQL real (`test_planning_pipeline.py`, 7):
+  filtros naturais com catálogo real, correspondência de títulos insensível
+  a acentos, ambigüidade não inferida, comparativa automática → expanded com
+  explicação, provedor só na expanded, estratégia explícita respeitada,
+  `merge_filters` com exclusão explícita.
+
+Comandos executados em 2026-08-30 (backend; frontend inalterado nesta tarefa):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK — All checks passed |
+| `uv run ruff format --check src tests` | OK — 96 arquivos |
+| `uv run mypy src tests` | OK — 96 arquivos (strict) |
+| `uv run pytest tests/unit -q` | OK — 402 passed, 3 skipped |
+| `uv run pytest tests/integration -q` | OK — 140 passed, 1 skipped (PostgreSQL real via testcontainers; podman + ryuk desativado neste ambiente) |
+| `bash scripts/audit.sh` | OK — 0 vulnerabilidades (pip-audit --strict); npm audit: 0 |
+| `python3 scripts/security_scan.py .` | OK — nenhum IOC bloqueado |
+
+Critérios: AC-07 (filtros inferidos com polaridade, ambigüidade não aplicada,
+prioridade explícita — planejamento; os estágios de recuperação já são
+cobertos por T08/T09; geração/verificação fica para T13); AC-11 (comparativa
+→ diversidade adaptativa e estratégia expanded, sem quota cega; execução na
+montagem de contexto de T12/T13); AC-13 (o planejador produz a pergunta
+autônoma estruturada — `QueryPlan.semantic_query` — que T15 registra; a
+reescrita de follow-up com contexto de sessão é T15).
+
+Limitações conhecidas: classificação de intenção e construção da consulta
+lexical são heurísticas léxicas em português (NOTES.md §4 — calibração no
+benchmark de T19); a resolução de filtros naturais opera por título de obra
+exacto (contíguo, normalizado) — menções por título curto/parcial ou por
+autor não são resolvidas nesta tarefa; a polaridade dos filtros naturais é
+por sinais léxicos conservadores ("só", "somente", ..., "exceto", "sem", ...)
+— preposições locativas ("em/no/na") NÃO são sinais, por desenho
+(ambigüidade não é aplicada silenciosamente); o provedor de planejamento
+(adapter HTTP) ainda não está conectado a um endpoint real de modelo em
+produção (T14 os integra).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 
