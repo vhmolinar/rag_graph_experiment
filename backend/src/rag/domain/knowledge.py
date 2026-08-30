@@ -10,7 +10,31 @@ from uuid import UUID, uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from rag.domain.enums import ConceptState, SummaryScope
+from rag.domain.library import Section
 from rag.domain.versions import utcnow
+
+
+def descendant_section_ids(sections: list[Section], root_id: UUID) -> frozenset[UUID]:
+    """IDs de `root_id` e todas as suas seções descendentes (função pura).
+
+    Usada pelo serviço de enriquecimento (T11) para calcular o escopo de
+    suporte de um resumo de capítulo: as passagens das seções descendentes
+    ("resumos/trechos filhos", SPEC §7.4). O invariante de aciclicidade é
+    garantido pelo banco (FK auto-referencial de `sections`).
+    """
+    by_parent: dict[UUID, list[UUID]] = {}
+    for section in sections:
+        if section.parent_section_id is not None:
+            by_parent.setdefault(section.parent_section_id, []).append(section.id)
+    result: set[UUID] = set()
+    stack = [root_id]
+    while stack:
+        current = stack.pop()
+        if current in result:
+            continue
+        result.add(current)
+        stack.extend(by_parent.get(current, ()))
+    return frozenset(result)
 
 
 class Summary(BaseModel):

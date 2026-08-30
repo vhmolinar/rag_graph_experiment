@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from rag.domain.answer import EvidenceRef, GeneratedAnswer
-from rag.domain.enums import Depth
+from rag.domain.enums import Depth, SummaryScope
 from rag.domain.query import MAX_SUBQUESTIONS
 
 MAX_PLANNED_ALIASES = 50
@@ -88,3 +88,100 @@ class PlannerProvider(Protocol):
     """
 
     async def plan(self, request: PlanningRequest) -> PlannedQuery: ...
+
+
+class PassageRef(BaseModel):
+    """Referência a passagem com texto citável para sínteses e conceitos.
+
+    Mais leve que `EvidenceRef` (que carrega score/rank/work_id — conceitos da
+    resposta, não da extração). `section_path` ajuda o provedor a entender o
+    contexto hierárquico; nunca é texto citável.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    passage_id: UUID
+    text: str = Field(min_length=1, max_length=5_000_000)
+    section_path: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class SummaryRequest(BaseModel):
+    """Pedido ao provedor de síntese hierárquica (SPEC §7.4, T11).
+
+    Blocos separados (mesma convenção de `GenerationRequest`): política e
+    contrato de saída imutáveis, escopo descritivo e as passagens-filho do
+    escopo. Sem profundidade — as políticas de §9.1 são para respostas
+    dissertativas (NOTES.md §10.12 item 10).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    system_policy: str = Field(min_length=1)
+    output_contract: str = Field(min_length=1)
+    scope_type: SummaryScope
+    scope_description: str = Field(min_length=1)
+    passages: tuple[PassageRef, ...] = Field(min_length=1)
+    prompt_version_id: UUID | None = None
+
+
+class SummaryResult(BaseModel):
+    """Síntese + passagens de suporte.
+
+    `supporting_passage_ids` PODE ser vazio: o provedor pode julgar que
+    nenhuma passagem sustenta a síntese (SPEC §7.4) — é o SERVIÇO que decide
+    a publicação (NOTES.md §10.12 item 2). O `Summary` do domínio, por
+    contrast, exige ao menos uma passagem: um item publicado SEMPRE tem
+    suporte (AC-12).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(min_length=1)
+    supporting_passage_ids: tuple[UUID, ...] = Field(default_factory=tuple)
+
+
+class ConceptExtractRequest(BaseModel):
+    """Pedido ao provedor de extração de conceitos (SPEC §7.4, T11)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    system_policy: str = Field(min_length=1)
+    output_contract: str = Field(min_length=1)
+    scope_description: str = Field(min_length=1)
+    passages: tuple[PassageRef, ...] = Field(min_length=1)
+    prompt_version_id: UUID | None = None
+
+
+class ExtractedConcept(BaseModel):
+    """Conceito proposto pelo provedor, ligado às passagens de suporte.
+
+    `supporting_passage_ids` vazio = o provedor não identificou suporte —
+    o serviço não publica o item (SPEC §7.4).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    normalized_label: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
+    supporting_passage_ids: tuple[UUID, ...] = Field(default_factory=tuple)
+
+
+class ExtractedConcepts(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    concepts: tuple[ExtractedConcept, ...] = Field(default_factory=tuple, max_length=500)
+
+
+@runtime_checkable
+class EnrichmentProvider(Protocol):
+    """Sínteses hierárquicas e conceitos (SPEC §7.4, T11).
+
+    Um provedor, duas operações sobre o mesmo endpoint compatível com OpenAI
+    (`/chat/completions`, JSON mode). Nunca devolve prosa fora do contrato:
+    síntese sem suporte é um resultado válido (item não publicado pelo
+    serviço), mas suportes fora do escopo são violação de contrato.
+    """
+
+    async def summarize(self, request: SummaryRequest) -> SummaryResult: ...
+    async def extract_concepts(self, request: ConceptExtractRequest) -> ExtractedConcepts: ...

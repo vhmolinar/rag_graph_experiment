@@ -744,10 +744,95 @@ não bloqueantes; podem ser revistas pelo usuário.
    `exclude_work_ids`. Os `edition_ids` ficam disponíveis para uma resolução de
    nível edição futura (API/UI) — fora do escopo declarado de T10.
 9. **`build_lexical_query` extrai palavras de conteúdo da pergunta
-   (português), sem mini-linguagem e sem modelo.** Stopwords, palavras de
-   pergunta e substantivos genéricos ("livro", "obra", "capítulo") são
-   removidos; as palavras restantes viram `required_terms` (AND) com
-   `trigram_threshold` padrão 0.3. É heurística calibrable (NOTES.md §4), não
-   um analizador morfológico. Se não sobrar palavras de conteúdo, a consulta
-   cai para `phrase` = pergunta inteira (raro corresponder; o estágio
-   semântico continua funcionando).
+    (português), sem mini-linguagem e sem modelo.** Stopwords, palavras de
+    pergunta e substantivos genéricos ("livro", "obra", "capítulo") são
+    removidos; as palavras restantes viram `required_terms` (AND) com
+    `trigram_threshold` padrão 0.3. É heurística calibrable (NOTES.md §4), não
+    um analizador morfológico. Se não sobrar palavras de conteúdo, a consulta
+    cai para `phrase` = pergunta inteira (raro corresponder; o estágio
+    semântico continua funcionando).
+
+### 10.12 Registro do implementador — 2026-08-30 (fase 1, T11)
+
+Interpretações declaradas antes de implementar T11 (resumos hierárquicos e
+conceitos), não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Contrato de enriquecimento próprio (`EnrichmentProvider`), não reuso de
+   `GeneratorProvider`.** `GenerationRequest`/`GeneratedAnswer` produzem
+   `Claim` (afirmações com evidências) — semântica da resposta dissertativa
+   (T13), não da síntese/conceito. `EnrichmentProvider` define
+   `summarize(SummaryRequest) -> SummaryResult` e
+   `extract_concepts(ConceptExtractRequest) -> ExtractedConcepts`, usando
+   `PassageRef` (id + texto + `section_path`) em vez de `EvidenceRef` (que
+   carrega score/rank/work_id — conceitos da resposta, não da extração).
+2. **`SummaryResult.supporting_passage_ids` PODE ser vazio no contrato do
+   provedor.** O modelo pode julgar "sem suporte" (SPEC §7.4: "Se o suporte
+   não puder ser identificado, o item abstrato não é publicado no índice") —
+   é o SERVIÇO que rejeita (não publica) o item e registra warning. O modelo
+   `Summary` do domínio continua exigindo `min_length=1`: um item publicado
+   SEMPRE tem suporte. Suportes FORA do escopo (outra seção, outra edição)
+   ou IDs de passagens desconhecidas são VIOLAÇÃO DE CONTRATO — falha
+   fechada (`ModelResponseError`), nunca publicação silenciosa.
+3. **Nenhuna migration nova.** O schema de T03 já tem `summaries`,
+   `summary_supports`, `concepts`, `concept_aliases`, `concept_evidence` com
+   as FKs compostas e o trigger `chapter = Section de topo` (R4-03).
+   `generator_version_id`/`extractor_version_id` referenciam
+   `model_endpoint_versions` com `endpoint_kind = 'generator'` — sínteses e
+   conceitos são geração via `/chat/completions`.
+4. **Versionamento de extração = `ModelEndpointVersion` + `PromptVersion`.**
+   Cada execução registra (idempotente via `VersionsRepository.get_or_create`):
+   `PromptVersion` por template (síntese e conceitos; identidade = hash do
+   template) e `ModelEndpointVersion` por papel (`label='summarizer'` /
+   `'concept-extractor'`, `kind='generator'`, `provider='openai-compatible'`,
+   `model_name` configurable, `params` com o `prompt_version_id`).
+   Reexecução com a MESMA versão é idempotente (no-op); com versão NOVA
+   (modelo ou prompt distintos) cria NOVOS registros — histórico nunca é
+   sobrescrito (test: "reexecução com nova versão não sobrescreve histórico").
+   Não há `--force` em T11: apagar registros antigos violaría a garantia.
+5. **Idempotência por (edição, versão).** Se a edição já tem resumos da
+   versão desta execução, a execução é no-op (mesmo espírito de `rag index`
+   sem `--force`). A identidade de uma execução é a versão de síntese; toda
+   a execução corre numa única transação, então "tem sínteses desta versão"
+   implica a execução concluíu — incluindo conceitos (que podem
+   legitimamente ser zero em conteúdo). Falha rollbacka tudo, nunca publica
+   estado parcial.
+6. **Escopos de suporte validados fechados no serviço.** Resumo de seção:
+   suportes ⊆ passagens-filho diretas da seção. Resumo de capítulo (Section
+   de topo, level=0): suportes ⊆ passagens-filho das seções DESCENDENTES do
+   capítulo ("resumos/trechos filhos", SPEC §7.4). Resumo de edição:
+   suportes ⊆ todas as passagens-filho da edição. Conceito: suportes ⊆
+   passagens-filho da edição.
+7. **Resumos de seção cobrem TODA seção com passagens diretas; resumos de
+   capítulo cobrem as seções de topo (level=0) com passagens descendentes.**
+   Uma seção de topo com texto próprio pode ter os dois escopos (seção e
+   capítulo) — granularidades distintas, redundância aceitável. Seções sem
+   passagens não geram resumo (nada a sintetizar).
+8. **Recuperação descendente = repositorios, não serviço de busca.**
+   `SummariesRepository.supporting_passages(summary_id)` e
+   `ConceptsRepository.supporting_passages(concept_id)` devolvem as
+   `Passage` originais (texto citável) — nunca o texto da síntese/conceito.
+   A resposta final nunca cita summary: `summary_supports` aponta SÓ a
+   `passages` (FK composta) e o texto da síntese nunca é um `Passage`
+   (AC-12, garantia estrutural + testada).
+9. **Conceitos são globais (não por edição).** `concepts.normalized_label` é
+   UNIQUE; `get_or_create` por rótulo normalizado. Aliases e evidências
+   acumulam; a PK de `concept_evidence` inclui `extractor_version_id`,
+   preservando histórico por versão. Estado padrão `proposed` (curatoria
+   futura — SPEC §5.1). Confiança de aliases/evidencias: 1.0 (o provedor não
+   devolve confiança numérica no contrato desta fase; é campo calibrable).
+10. **Prompt templates vivem no serviço de enriquecimento**
+    (`application/enrichment.py`) e são transmitidos no request (mesma
+    convenção de `GenerationRequest`); o adapter monta as mensagens chat
+    (`system` = política+contrato, `user` = escopo+passagens). Hash do
+    template → `PromptVersion.template_sha256`. Sem profundidade em sínteses:
+    as políticas de profundidade (§9.1) são para respostas dissertativas.
+11. **Adapter HTTP único `OpenAiCompatibleEnrichmentProvider`** implementa os
+    dois métodos do `EnrichmentProvider` sobre `POST /chat/completions` (JSON
+    mode), reaproveitando `call_with_resilience` e
+    `ModelAuthSettings`/`ResilienceSettings` (T07); configuração `ENRICHMENT_*`.
+    Retries só cobrem falhas transitórias; 4xx/payload inválido falham
+    fechados (mesma regra de T07, NOTES.md §10.8 item 1).
+12. **Sem comando CLI em T11** (não consta nos entregáveis; os comandos de
+    fase 1 continuam sendo ingest/ocr/index/inspect). O enriquecimento é
+    invocado via `EnrichmentService`; integração no CLI/API fica para T14+
+    se a operação o exigir.

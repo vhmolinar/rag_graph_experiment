@@ -21,10 +21,10 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada). Execução da diversidade/limite flexível na montagem de contexto e declaração de limitação: T12/T13 |
-| AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
+| AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts` (seção/capítulo/edição com suportes), `test_summary_without_support_is_rejected` (SPEC §7.4), `test_summaries_never_serve_as_citations` (descendência devolve SÓ passagens; o texto da síntese nunca é passagem), `test_concept_leads_to_original_passages`, `test_enrichment.py::TestValidatedSupports` (suporte fora do escopo falha fechado) |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
-| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente) |
+| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history` (versões de síntese/conceito registradas via `ModelEndpointVersion`+`PromptVersion`; reexecução com nova versão NUNCA sobrescreve histórico), `test_reexecution_same_version_is_idempotent`. Falta: `AnswerRun` completo com todas as versões (T13/T18) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
@@ -973,6 +973,103 @@ por sinais léxicos conservadores ("só", "somente", ..., "exceto", "sem", ...)
 (ambigüidade não é aplicada silenciosamente); o provedor de planejamento
 (adapter HTTP) ainda não está conectado a um endpoint real de modelo em
 produção (T14 os integra).
+
+### T11 — Resumos hierárquicos e conceitos ✅
+
+Nenhuna dependência nova; nenhuna migration nova (reaproveita o schema de T03:
+`summaries`, `summary_supports`, `concepts`, `concept_aliases`, `concept_evidence`,
+com as FKs compostas e o trigger `chapter = Section de topo`). Interpretações
+registradas em NOTES.md §10.12 antes de implementar: contrato próprio
+`EnrichmentProvider` (síntese e conceitos NÃO reusan `GeneratorProvider`, que
+produz `Claim` de resposta dissertativa); `SummaryResult.supporting_passage_ids`
+pode ser vazio no contrato (o SERVIÇO rejeita/não publica o item — SPEC §7.4),
+mas suportes fora do escopo são violação de contrato falha fechada; versãoamento
+de extração via `ModelEndpointVersion`+`PromptVersion` com reexecução idempotente
+por versão e histórico NUNCA sobrescrito; resumos de seção cobrem toda seção com
+passagens diretas e resumos de capítulo cobrem as seções de topo com passagens
+descendentes ("resumos/trechos filhos"); recuperação descendente via
+repositorios que devolvem SEMPRE `Passage`; conceitos são globais por rótulo
+normalizado (UNIQUE no banco) com estado `proposed`; sem comando CLI nesta tarefa.
+
+Entregáveis:
+
+- **Contratos de provedor** (`domain/providers.py`): `PassageRef` (id + texto +
+  `section_path`), `SummaryRequest`/`SummaryResult`, `ConceptExtractRequest`/
+  `ExtractedConcept`/`ExtractedConcepts` e o Protocol `EnrichmentProvider`
+  (runtime-checkable, testeado com `isinstance`).
+- **Adapter HTTP** (`adapters/enrichment_adapter.py`,
+  `OpenAiCompatibleEnrichmentProvider`): `POST /chat/completions` compatível com
+  OpenAI (JSON mode), reaproveita `call_with_resilience`,
+  `ModelAuthSettings`/`ResilienceSettings` (T07); configuração `ENRICHMENT_*`;
+  retries só para falhas transitórias (mesma regra de T07).
+- **Serviço** (`application/enrichment.py`, `EnrichmentService`): gera as
+  sínteses de seção/capítulo/edição e extrai conceitos/aliases/evidencias;
+  valida escopos de suporte fechados; registra `PromptVersion` (hash do
+  template) e `ModelEndpointVersion` por papel (`summarizer`/`concept-extractor`);
+  idempotente por (edição, versão); persiste tudo numa única transação
+  (falha rollbacka tudo). `EnrichmentReport` sem texto do livro.
+- **Repositorios** (`infrastructure/repositories/enrichment.py`):
+  `SummariesRepository` (create, `has_for_edition_version`, `list_by_edition`,
+  `supporting_passages`) e `ConceptsRepository` (get_or_create por rótulo,
+  `add_alias`, `add_evidence` idempotente por versão, `supporting_passages`,
+  contagens). Recuperação descendente devolve `Passage` originais — nunca a
+  síntese/conceito como citação (AC-12).
+- **Double** (`tests/fixtures/model_doubles.py::FakeEnrichmentProvider`):
+  determinístico, com fábricas customizadas (suporte vazio, fora do escopo) e
+  fila de exceções; `summary_without_support` auxiliar.
+
+Testes/evidências:
+
+- **Unit** (`tests/unit/test_enrichment.py`): `descendant_section_ids` (árvore,
+  seção sem filhos, irmãos excluídos); `_validated_supports` (vazio → item
+  rejeitado com aviso; fora do escopo → `ModelResponseError`; dedupe preserva
+  ordem). `test_model_doubles.py::TestFakeEnrichmentProvider` (satisfaz o
+  Protocol; determinístico; falha injetada então sucesso).
+- **Contrato HTTP** (`tests/unit/test_enrichment_adapter.py`, 17): sucesso de
+  síntese e conceitos, suporte vazio é contrato válido, violação de contrato
+  (`text` ausente, rótulo vazio), Bearer auth, timeout, conexão, 429 com
+  `Retry-After`, 5xx, 4xx, envelope malformado, conteúdo não-JSON.
+- **Integração** (`tests/integration/test_enrichment_pipeline.py`, 10, contra
+  PostgreSQL real): hierarquia completa (2 seções + 2 capítulos + edição) com
+  suportes e conceitos `proposed`; síntese sem suporte REJEITADA (não publicada,
+  avisos registrados); suporte fora do escopo falha fechado sem nada parcial;
+  conceito leva às passagens originais (⊆ passagens indexadas); síntese nunca
+  é citação (a descendência devolve SÓ passagens; o texto da síntese nunca é
+  passagem); reexecução com nova versão NUNCA sobrescreve histórico (duas
+  gerações de sínteses e evidencias de conceito conviven); reexecução com a
+  mesma versão é idempotente; reexecução é idempotente MESMO com conceitos
+  vazios (a identidade é a versão de síntese); edição desconhecida →
+  `NotFoundError`; edição sem passagens indexadas → `IngestionError`.
+
+Comandos executados em 2026-08-30 (Linux; Python 3.12; PostgreSQL real via
+testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
+`TESTCONTAINERS_RYUK_DISABLED=true`):
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK — 165 pacotes, lockfiles consistentes |
+| `make lint` | OK — ruff: All checks passed; eslint: 0 problemas |
+| `make format-check` | OK — ruff format: 102 arquivos; prettier: ok |
+| `make typecheck` | OK — mypy strict: 102 arquivos, 0 issues; tsc: ok |
+| `make test` | OK — 430 unitários passed, 3 skipped (e2e opcionais); 1 frontend |
+| `make test-integration` | OK — 150 passed, 1 skipped (PostgreSQL real via testcontainers; podman + ryuk desativado neste ambiente) |
+| `make audit` | OK — 0 vulnerabilidades (pip-audit --strict); npm audit: 0 |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+
+Critérios: AC-12 (sínteses hierárquicas levam a passagens originais e nunca
+aparecem como citação — coberto integralmente); AC-14 (falhas do provedor de
+enriquecimento viram erros tipados); AC-15 (versãoamento de extração via
+`ModelEndpointVersion`+`PromptVersion`, reexecução com nova versão nunca
+sobrescreve histórico — contribui à cobertura, `AnswerRun` completo fica para
+T13/T18).
+
+Limitações conhecidas: a confiança de aliases/evidencias de conceitos é fixa
+1.0 (o provedor não devolve confiança numérica no contrato desta fase — campo
+calibrable, NOTES.md §4); os templates de síntese/conceitos e o envio de TODAS
+as passagens do escopo ao provedor não são ainda calibrados para contexto de
+modelo (NOTES.md §4, benchmark T19); uma falha intermitente observada UMA vez
+em `test_ingest.py::test_reingest_is_idempotent` durante a rodada não se
+reproduziu nas execuções seguintes (preexistente, sem relação a T11).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

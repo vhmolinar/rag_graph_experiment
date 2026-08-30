@@ -1,10 +1,11 @@
 """Doubles locais dos provedores de modelo (SPEC §11, T07).
 
-Implementações em memória de `EmbeddingProvider`, `RerankerProvider` e
-`GeneratorProvider` para uso por testes de outras camadas (recuperação,
-geração, planejador — T08+) sem depender de rede ou de um endpoint HTTP
-simulado. Determinísticas por padrão; cada double aceita uma fila opcional
-de exceções para simular falhas transitórias antes do comportamento normal.
+Implementações em memória de `EmbeddingProvider`, `RerankerProvider`,
+`GeneratorProvider`, `PlannerProvider` e `EnrichmentProvider` para uso por
+testes de outras camadas (recuperação, geração, planejador, enriquecimento —
+T08+) sem depender de rede ou de um endpoint HTTP simulado. Determinísticas
+por padrão; cada double aceita uma fila opcional de exceções para simular
+falhas transitórias antes do comportamento normal.
 """
 
 import hashlib
@@ -13,7 +14,16 @@ from collections import deque
 from collections.abc import Callable, Sequence
 
 from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
-from rag.domain.providers import GenerationRequest, PlannedQuery, PlanningRequest
+from rag.domain.providers import (
+    ConceptExtractRequest,
+    ExtractedConcept,
+    ExtractedConcepts,
+    GenerationRequest,
+    PlannedQuery,
+    PlanningRequest,
+    SummaryRequest,
+    SummaryResult,
+)
 
 
 def _deterministic_vector(text: str, dimensions: int) -> list[float]:
@@ -190,6 +200,83 @@ def _default_suggestion(request: PlanningRequest) -> PlannedQuery:
         aliases=tuple(words[:3]),
         concept_labels=(),
     )
+
+
+class FakeEnrichmentProvider:
+    """Double de `EnrichmentProvider` (T11).
+
+    - `summarize`: por padrão, devolve uma síntese determinística e lista TODAS
+      as passagens do request como suporte; `summary_factory` customizada permite
+      casos de suporte vazio (item rejeitado) ou suporte fora do escopo.
+    - `extract_concepts`: por padrão, devolve um conceito derivado da primeira
+      passagem; `concepts_factory` customizada permite casos vazios/extra.
+    Aceita uma fila de exceções para simular falhas transitórias.
+    """
+
+    def __init__(
+        self,
+        *,
+        summary_factory: Callable[[SummaryRequest], SummaryResult] | None = None,
+        concepts_factory: Callable[[ConceptExtractRequest], ExtractedConcepts] | None = None,
+        fail_with: Sequence[Exception] = (),
+    ) -> None:
+        self._summary_factory = summary_factory or _default_summary
+        self._concepts_factory = concepts_factory or _default_concepts
+        self._pending_failures: deque[Exception] = deque(fail_with)
+        self.summary_requests: list[SummaryRequest] = []
+        self.concept_requests: list[ConceptExtractRequest] = []
+
+    def _maybe_fail(self) -> None:
+        if self._pending_failures:
+            raise self._pending_failures.popleft()
+
+    async def summarize(self, request: SummaryRequest) -> SummaryResult:
+        self._maybe_fail()
+        self.summary_requests.append(request)
+        return self._summary_factory(request)
+
+    async def extract_concepts(self, request: ConceptExtractRequest) -> ExtractedConcepts:
+        self._maybe_fail()
+        self.concept_requests.append(request)
+        return self._concepts_factory(request)
+
+
+def _default_summary(request: SummaryRequest) -> SummaryResult:
+    first = request.passages[0]
+    text = f"Síntese de {request.scope_type.value}: {first.text[:120]}"
+    return SummaryResult(
+        text=text, supporting_passage_ids=tuple(p.passage_id for p in request.passages)
+    )
+
+
+def _default_concepts(request: ConceptExtractRequest) -> ExtractedConcepts:
+    if not request.passages:
+        return ExtractedConcepts(concepts=())
+    first = request.passages[0]
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]{4,}", first.text.lower())
+    label = words[0] if words else "conceito-fixture"
+    return ExtractedConcepts(
+        concepts=(
+            ExtractedConcept(
+                normalized_label=label,
+                description="Conceito de fixture.",
+                aliases=(f"alias-{label}",),
+                supporting_passage_ids=(first.passage_id,),
+            ),
+        )
+    )
+
+
+def summary_without_support(
+    reason: str = "sem suporte identificado",
+) -> Callable[[SummaryRequest], SummaryResult]:
+    """Fábrica para exercitar SPEC §7.4: síntese sem passagens de suporte —
+    o serviço rejeita (não publica) o item."""
+
+    def _factory(request: SummaryRequest) -> SummaryResult:
+        return SummaryResult(text=reason, supporting_passage_ids=())
+
+    return _factory
 
 
 def abstention_answer(reason: str = "Sem suporte suficiente no acervo.") -> GeneratedAnswer:
