@@ -462,7 +462,63 @@ não bloqueantes; podem ser revistas pelo usuário.
    fora do escopo declarado de T06. Meramente registrado aqui para
    referência futura (T18, rastreabilidade).
 
-### 10.7 Incidentes de cadeia de suprimentos
+### 10.7 Registro do implementador — 2026-08-29 (fase 1, correções de revisão T06)
+
+Correções aplicadas ao corrigir `docs/rag/REVIEW_T06.md` (T6-01 a T6-10).
+Superam as interpretações declaradas em §10.6 itens 5 e 7, que se mostraram
+insuficientes na revisão.
+
+1. **Reindexação passou a ser versionada por execução, nunca destrutiva
+   (T6-01).** Nova tabela `index_runs` (migration `0003`) registra cada
+   execução de `rag index` — edição + versões de extração/chunking/embedding/
+   endpoint — com no máximo uma execução `is_active` por edição. Passagens de
+   execuções antigas nunca são apagadas; `--force` minta uma execução nova
+   mesmo que a identidade de versões não tenha mudado, em vez de fazer
+   `DELETE` físico. A idempotência agora compara a identidade completa (as
+   quatro versões), não a mera existência de qualquer passagem — parâmetros
+   novos são executados automaticamente, sem exigir `--force`.
+2. **Reextração é validada contra o que `rag ingest` persistiu, sempre
+   (T6-02).** Antes de decidir qualquer coisa (inclusive no caminho
+   idempotente), `rag index` recompara a reextração com as `Section`/`Page`
+   já persistidas — por conteúdo (`text_sha256` recalculado), não apenas por
+   chave — e falha fechado (`IngestionError`) em qualquer divergência. Isso
+   NÃO exigiu alterar o schema de T03: o campo `text_sha256` já existente em
+   `pages` foi suficiente para a comparação de conteúdo. `ExtractionVersion`
+   passou a ser efetivamente registrada por `rag index` (a lacuna do item 7
+   de §10.6 está corrigida).
+3. **`original_text` sobrevive ao chunking (T6-05).** `ChunkNode`/`Passage`
+   ganharam `original_text`, reconstituído por concatenação dos blocos
+   canônicos de origem (granularidade de bloco — a mesma que o schema de T05
+   preserva); `citable_text` passou a priorizar esse campo. `text`
+   (normalizado) continua alimentando busca lexical/embeddings.
+4. **Adapter de embeddings validado por contrato tipado (T6-03/T6-09).**
+   Resposta agora é parseada por modelos Pydantic e reordenada pelo campo
+   `index` de cada item (nunca pela ordem bruta de `data`); índices ausentes,
+   repetidos ou fora do intervalo, e valores não finitos (NaN/Inf), são
+   rejeitados antes de qualquer persistência.
+5. **HTTPS exigido com credencial (T6-04).** `EmbeddingEndpointSettings`
+   rejeita `api_key` não vazio combinado com `base_url` que não seja
+   `https://`.
+6. **Lote de embeddings configurável e versionado (T6-06).** Novo
+   `EMBEDDING_BATCH_SIZE` (default 64); cada lote é gerado e validado antes
+   de qualquer INSERT — uma falha no meio não publica índice parcial. O
+   tamanho do lote usado é registrado em `EmbeddingVersion.params` (AC-15).
+7. **Chunking configurável via `CHUNKING_*` e opções de CLI (T6-07).**
+   `rag index` não fica mais preso aos defaults de `ChunkingParams`.
+8. **Identidade de versão mais explícita (T6-08).** Rótulos de
+   `ChunkingVersion`/`ExtractionVersion` passaram a incluir um sufixo de
+   revisão do algoritmo (`structural-chunker-v1`/`docling-structural-v1`) —
+   mudar a heurística exige bumpar o sufixo. `ModelEndpointVersion` passou a
+   ser registrada por `rag index`, com o endpoint e uma revisão de modelo
+   opcional (`EMBEDDING_MODEL_REVISION`) em `params`.
+9. **Concorrência serializada por lock de edição (T6-10).** Um
+   `pg_advisory_xact_lock` por `edition_id`, tomado no início da transação de
+   `index_edition`, serializa duas indexações concorrentes da mesma edição —
+   a segunda observa a execução já ativa em vez de competir por uma
+   restrição de unicidade (que deixou de existir sobre o histórico de
+   `index_runs` — só a execução ativa é única por edição).
+
+### 10.8 Incidentes de cadeia de suprimentos
 
 Nenhum. Verificado em 2026-08-28: sem `plain-crypto-js`, sem axios 1.14.1/0.30.4 (axios
 não é dependência), sem referência a `sfrclak.com`. `make security-scan` automatiza essa
