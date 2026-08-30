@@ -16,11 +16,13 @@ Inference, Infinity):
 """
 
 import asyncio
+import math
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import SettingsConfigDict
 
-from rag.adapters.model_settings import ModelAuthSettings, ResilienceSettings
+from rag.adapters.model_settings import HttpEndpointSettings
 from rag.adapters.resilience import CircuitBreaker, SleepFn, call_with_resilience
 from rag.domain.errors import (
     ModelResponseError,
@@ -32,14 +34,48 @@ from rag.domain.errors import (
 _DEFAULT_RETRY_AFTER_SECONDS = 60
 
 
-class RerankerEndpointSettings(ModelAuthSettings, ResilienceSettings):
-    """Configuração do endpoint de reranking (contrato explícito, não OpenAI)."""
+class RerankerEndpointSettings(HttpEndpointSettings):
+    """Configuração do endpoint de reranking (contrato explícito, não OpenAI).
+
+    Reranking é uma operação idempotente (a mesma consulta + os mesmos
+    documentos produzem as mesmas pontuações, sem efeito colateral), então
+    retries transitórios são permitidos. A validação de URL/credencial vem de
+    `HttpEndpointSettings`.
+    """
 
     model_config = SettingsConfigDict(env_prefix="RERANKER_", extra="ignore")
 
     base_url: str = "http://localhost:8002"
     model: str = "qwen3-reranker"
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = Field(default=30.0, gt=0)
+
+
+class _RerankItem(BaseModel):
+    """Um item da resposta de reranking, validado (T7-03).
+
+    Exige índice inteiro não negativo e score **finito**: `NaN`/`Infinity`
+    passariam por `float()` e contaminariam o ranking.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    index: int = Field(ge=0)
+    relevance_score: float
+
+    @field_validator("relevance_score")
+    @classmethod
+    def _finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("relevance_score contém valor não finito (NaN/Inf)")
+        return value
+
+
+class _RerankResponse(BaseModel):
+    """Envelope da resposta de reranking (T7-03)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    results: list[_RerankItem]
 
 
 def _headers(settings: RerankerEndpointSettings) -> dict[str, str]:
@@ -121,13 +157,26 @@ class HttpRerankerProvider:
 
         try:
             payload = response.json()
-            results = payload["results"]
-            by_index = {int(item["index"]): float(item["relevance_score"]) for item in results}
-        except (ValueError, KeyError, TypeError) as exc:
+            parsed = _RerankResponse.model_validate(payload)
+        except ValueError as exc:
             raise ModelResponseError(
                 "Resposta do endpoint de reranking em formato inesperado.", cause=exc
             ) from exc
 
+        # T7-03: exige cardinalidade EXATA à entrada (n<len> item por
+        # documento) e índice único cobrindo 0..n-1. Isso rejeita duplicatas
+        # (inclusive para um único documento), lacunas e índices fora do
+        # intervalo — o dict não pode sobrescrever silenciosamente resultados
+        # repetidos.
+        if len(parsed.results) != len(documents):
+            raise ModelResponseError(
+                "Resultados de reranking em quantidade diferente dos documentos enviados.",
+                context={
+                    "esperado": str(len(documents)),
+                    "recebido": str(len(parsed.results)),
+                },
+            )
+        by_index = {item.index: item.relevance_score for item in parsed.results}
         expected_indices = set(range(len(documents)))
         if set(by_index) != expected_indices:
             raise ModelResponseError(

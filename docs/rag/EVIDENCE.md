@@ -12,7 +12,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); falta o caminho passagem→leitor (T17) |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages`, `test_pdf_citable_text_recomposes_offsets_across_blocks` (texto citável PDF é a fatia endereçada), `test_indexes_pdf_with_page_offsets` e `test_fingerprint_backfill_uses_registered_ocr_derivative`; falta o caminho passagem→leitor (T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
@@ -23,9 +23,9 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ⬜ | T10/T12/T13 |
 | AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
-| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente) |
-| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
+| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T7-01: `test_generation_adapter.py::test_timeout_raises_model_timeout_error`/`test_5xx_raises_model_unavailable_error`/`test_connection_error_raises_model_unavailable_error` (geração NÃO retenta operação não idempotente — uma única chamada HTTP, default `max_retries=0`) + `test_default_max_retries_is_zero`; R2-T7-01: `test_generation_adapter.py::test_non_zero_max_retries_is_rejected` e `test_env_non_zero_max_retries_is_rejected` (retry de geração impossível: `max_retries: Literal[0]`, rejeita `GENERATOR_MAX_RETRIES!=0`); T7-04: `test_resilience.py::test_half_open_lets_only_one_probe_reach_endpoint`. Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: histórico append-only por `IndexRun` (`test_force_reindexes_preserves_passage_history`, `test_different_chunking_params_same_edition_creates_new_run_without_force`), fingerprint integral (`test_fingerprint.py`), backfill write-once/idempotente e concorrente (`test_fingerprint_backfill_is_write_once_and_idempotent`, `test_fingerprint_backfill_never_overwrites_divergent_identity`, `test_concurrent_fingerprint_backfills_converge_idempotently`) e derivado OCR correto (`test_fingerprint_backfill_uses_registered_ocr_derivative`); `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve versão existente) |
+| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T7-02: `test_http_with_api_key_is_rejected`/`test_http_with_api_key_file_is_rejected` (generator/reranker recusam credencial Bearer sobre `http://`) e `test_https_with_api_key_is_accepted`; T7-05: `test_error_message_does_not_leak_secret_file_path` + `hide_input_in_errors` (erros de configuração não ecoam o caminho do secret file nem a URL). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
 | AC-19 | Benchmark repetível, compara sem sobrescrever | ⬜ | T19 |
@@ -467,6 +467,44 @@ Gates reexecutados em 2026-08-29 após as correções R6-01–R6-06:
 
 ### T06 — Chunking e indexação ✅
 
+#### Estado vigente após ROUND5
+
+As notas históricas abaixo foram superadas pela implementação append-only por
+`IndexRun`. O comportamento vigente preserva passagens antigas em
+reindexação, associa `ExtractionVersion`, `EmbeddingVersion` e
+`ModelEndpointVersion`, persiste `canonical_fingerprint` (migration `0004`) e
+permite atualização administrativa de edições legadas via
+`rag backfill-fingerprint <edition-id>`. O backfill é compare-and-set: só
+preenche valor ausente, repetição equivalente é idempotente e identidade
+divergente falha com conflito; para `pdf_scan`, usa o derivado OCR registrado,
+nunca o scan original. `make test-integration` permanece neutro para Docker;
+`make test-integration-podman` seleciona explicitamente o socket compatível do
+Podman sem UID hardcoded.
+
+Evidência vigente desta rodada:
+
+- unitários: `make test-unit`;
+- contratos HTTP: `make test-contract` (suíte disjunta em `tests/contract`);
+- PostgreSQL/pgvector: `make test-integration-podman`;
+- backfill: testes de sucesso, idempotência, conflito, concorrência, CLI e
+  seleção do derivado OCR em `tests/integration/test_ingest.py` e
+  `tests/integration/test_cli.py`;
+- migration: `alembic heads` retorna somente `0004`; upgrade, downgrade seguro
+  e re-upgrade são exercitados por `test_migrations.py`.
+
+Comandos reexecutados em 2026-08-30 após as correções finais da ROUND5:
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lock` | OK — 165 pacotes |
+| `make lint` / `make format-check` / `make typecheck` | OK |
+| `make test-unit` | OK — 258 passed, 3 skipped (e2e opcionais) |
+| `make test-contract` | OK — 26 passed |
+| `make test-integration-podman` | OK — 116 passed, 1 skipped (e2e OCR opcional) |
+| `make audit` | OK — pip-audit sem vulnerabilidades conhecidas; npm audit 0 |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+| `.venv/bin/alembic -c alembic.ini heads` | OK — único head `0004` |
+
 Dependências novas declaradas nesta tarefa (dentro do conjunto aprovado,
 NOTES.md §10.1 item 1, ainda não consumidas antes): `httpx==0.28.1`
 (runtime — cliente do adapter de embeddings) e `respx==0.23.1` (dev —
@@ -532,7 +570,7 @@ Testes/evidências:
   `test_embedding_count_mismatch_fails_before_persisting` (ambos confirmam
   ZERO passagens persistidas após a falha);
 - idempotência/`--force`: `test_reindex_without_force_is_idempotent`,
-  `test_force_reindexes_and_replaces_passages`;
+  `test_force_reindexes_preserves_passage_history`;
 - contrato HTTP do adapter de embeddings: 14 testes em
   `test_embedding_adapter.py` (respx — sucesso, timeout, erro de conexão,
   429 com/sem `Retry-After`, 5xx, 4xx, corpo malformado, contagem/dimensão
