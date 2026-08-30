@@ -271,6 +271,85 @@ class TestOriginalText:
         for node in nodes:
             assert node.original_text == "Frase unica no paragrafo."
 
+    def test_split_aligned_block_has_exact_text_per_child(self) -> None:
+        text = (
+            "Primeira frase suficientemente longa. "
+            "Segunda frase suficientemente longa. "
+            "Terceira frase suficientemente longa."
+        )
+        doc = CanonicalDocument(
+            source_type=SourceType.EPUB,
+            blocks=(
+                CanonicalBlock(
+                    ordinal=0,
+                    kind=BlockKind.PARAGRAPH,
+                    level=0,
+                    text=text,
+                    original_text=text,
+                    section_path=CH1,
+                ),
+            ),
+        )
+        children = [
+            node
+            for node in chunk_document(
+                doc,
+                ChunkingParams(
+                    child_target_tokens=10, child_overlap_tokens=0, parent_target_tokens=1000
+                ),
+            )
+            if node.parent_index is not None
+        ]
+        assert len(children) == 3
+        assert all(node.original_text == node.text for node in children)
+
+    def test_pdf_citable_text_recomposes_offsets_across_blocks(self) -> None:
+        first = "Primeira frase completa."
+        second = "Segunda frase longa completa. Terceira frase longa completa."
+        page = first + "\n" + second
+        doc = CanonicalDocument(
+            source_type=SourceType.PDF_TEXT,
+            pages=(CanonicalPage(physical_index=0, text=page),),
+            blocks=(
+                CanonicalBlock(
+                    ordinal=0,
+                    kind=BlockKind.PARAGRAPH,
+                    level=0,
+                    text=first,
+                    original_text=first,
+                    section_path=CH1,
+                    page_index=0,
+                    char_start=0,
+                    char_end=len(first),
+                ),
+                CanonicalBlock(
+                    ordinal=1,
+                    kind=BlockKind.PARAGRAPH,
+                    level=0,
+                    text=second,
+                    original_text=second,
+                    section_path=CH1,
+                    page_index=0,
+                    char_start=len(first) + 1,
+                    char_end=len(page),
+                ),
+            ),
+        )
+        children = [
+            n
+            for n in chunk_document(
+                doc,
+                ChunkingParams(
+                    child_target_tokens=14, child_overlap_tokens=0, parent_target_tokens=1000
+                ),
+            )
+            if n.parent_index is not None
+        ]
+        for node in children:
+            assert node.char_start is not None
+            assert node.char_end is not None
+            assert node.original_text == page[node.char_start : node.char_end]
+
     def test_original_text_preserves_exact_source_when_it_differs_from_normalized(self) -> None:
         blocks = (
             CanonicalBlock(

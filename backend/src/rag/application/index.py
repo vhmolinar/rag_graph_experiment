@@ -244,6 +244,11 @@ class IndexingService:
             id_by_node_index: dict[int, UUID] = {}
             for node in nodes:
                 section = section_by_path.get(node.section_path)
+                if section is None and node.section_path:
+                    raise IngestionError(
+                        "Chunk referencia seção não persistida.",
+                        context={"edition_id": str(edition.id)},
+                    )
                 page_start = self._resolve_page(
                     edition, node.page_start_index, page_by_physical_index
                 )
@@ -350,10 +355,13 @@ class IndexingService:
         chunk ser gerado ou persistido. O contexto do erro nunca inclui
         texto do livro — apenas contagens e índices estruturais (T5-10)."""
         expected_sections = {tuple(s.path): s for s in derive_sections(edition.id, canonical)}
-        if (
-            edition.canonical_fingerprint is not None
-            and canonical.fingerprint() != edition.canonical_fingerprint
-        ):
+        if edition.canonical_fingerprint is None:
+            raise IngestionError(
+                "Edição sem fingerprint canônico; execute o backfill ou reingestão "
+                "administrativa antes de indexar.",
+                context={"edition_id": str(edition.id)},
+            )
+        if canonical.fingerprint() != edition.canonical_fingerprint:
             raise IngestionError(
                 "Reextração diverge da representação canônica persistida na ingestão.",
                 context={"edition_id": str(edition.id)},

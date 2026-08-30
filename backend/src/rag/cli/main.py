@@ -374,6 +374,37 @@ def create_app(
         )
         raise typer.Exit(code=code)
 
+    @app.command(name="backfill-fingerprint")
+    def backfill_fingerprint(
+        edition_id: Annotated[str, typer.Argument(help="UUID da edição")],
+    ) -> None:
+        """Reextrai e registra o fingerprint canônico de edição legada."""
+        try:
+            parsed = UUID(edition_id)
+        except ValueError:
+            typer.secho("erro: edition-id deve ser um UUID.", err=True)
+            raise typer.Exit(code=1) from None
+        storage = StorageSettings()
+        service = IngestionService(
+            ArtifactStore(storage.root, max_size_bytes=storage.max_size_bytes), DoclingExtractor()
+        )
+        db = Database(DatabaseSettings())
+
+        async def run() -> str:
+            await db.open()
+            try:
+                async with db.connection() as conn:
+                    return await service.backfill_fingerprint(conn, edition_id=parsed)
+            finally:
+                await db.close()
+
+        try:
+            fingerprint = asyncio.run(run())
+        except RagError as exc:
+            _echo_error(exc)
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"fingerprint atualizado: edição={parsed} sha256={fingerprint}")
+
     @app.command()
     def inspect(
         edition_id: Annotated[str, typer.Argument(help="UUID da edição")],

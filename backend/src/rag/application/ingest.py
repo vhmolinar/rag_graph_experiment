@@ -9,6 +9,8 @@ objetos órfãos de uma transação abortada são detectáveis por `audit()`.
 `--dry-run` executa validação, hash, deduplicação e extração sem persistir.
 """
 
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -22,7 +24,7 @@ from rag.adapters.ocr_adapter import OcrProvenance, load_provenance
 from rag.domain.canonical import BlockKind, CanonicalDocument
 from rag.domain.enums import ArtifactKind, IngestionStatus, LicenseStatus, SourceType
 from rag.domain.errors import ConflictError, IngestionError
-from rag.domain.identifiers import Sha256, sha256_of_file
+from rag.domain.identifiers import Sha256, sha256_of_file, sha256_of_text
 from rag.domain.library import (
     Contributor,
     DerivedArtifactRef,
@@ -153,6 +155,31 @@ class IngestionService:
     def __init__(self, store: ArtifactStore, extractor: DoclingExtractor) -> None:
         self._store = store
         self._extractor = extractor
+
+    async def backfill_fingerprint(self, conn: AsyncConnection, *, edition_id: UUID) -> str:
+        """Reextrai artefato imutável e registra fingerprint em transação."""
+        editions = EditionsRepository(conn)
+        edition = await editions.get(edition_id)
+        if edition is None:
+            raise IngestionError("Edição não encontrada.", context={"edition_id": str(edition_id)})
+        suffix = ".epub" if edition.source_type is SourceType.EPUB else ".pdf"
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+            with self._store.open_stream(edition.source_sha256) as stream:
+                shutil.copyfileobj(stream, tmp)
+            tmp.flush()
+            canonical = self._extractor.extract(
+                Path(tmp.name), self._extraction_type(edition.source_type)
+            )
+        pages = await PagesRepository(conn).list_by_edition(edition.id)
+        if len(pages) != len(canonical.pages) or any(
+            sha256_of_text(page.text) != persisted.text_sha256
+            for page, persisted in zip(canonical.pages, pages, strict=False)
+        ):
+            raise IngestionError("Reextração diverge das páginas persistidas; backfill abortado.")
+        fingerprint = canonical.fingerprint()
+        async with conn.transaction():
+            await editions.update_canonical_fingerprint(edition.id, fingerprint)
+        return fingerprint
 
     async def ingest(
         self,

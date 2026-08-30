@@ -138,3 +138,10 @@ class EditionsRepository:
                 "UPDATE editions SET ingestion_status = %s WHERE id = %s",
                 (status.value, edition_id),
             )
+
+    async def update_canonical_fingerprint(self, edition_id: UUID, fingerprint: str) -> None:
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE editions SET canonical_fingerprint = %s WHERE id = %s",
+                (fingerprint, edition_id),
+            )

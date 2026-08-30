@@ -125,3 +125,26 @@ Risco residual: os testes de integração que validam a aplicação da migration
 persistência do fingerprint e indexação PostgreSQL precisam ser reexecutados
 em ambiente com PostgreSQL disponível. A ausência desse ambiente impede
 declarar a validação de persistência completa como concluída.
+
+## Complemento — rodada 3
+
+Após a validação `REVIEW_T06_ROUND3.md`, foram corrigidos os pontos abaixo:
+
+- blocos alinhados divididos entre filhos agora usam o texto exato de cada
+  filho; regressão adicionada em `test_split_aligned_block_has_exact_text_per_child`;
+- a migration foi renumerada para `0004`, com `down_revision="0003"`, após
+  `0003_index_runs.py`; `alembic heads` retorna um único head (`0004`);
+- edições sem fingerprint não são mais indexadas silenciosamente: o serviço
+  falha fechado com `IngestionError` orientando backfill/reingestão
+  administrativa. Não foi criado backfill automático, pois isso exigiria
+  definir a versão histórica do extrator antes de reconstruir a representação;
+- somente `section_path == ()` pode resultar em `section_id=None`; caminhos
+  não vazios sem seção persistida produzem `IngestionError` sanitizado.
+
+Verificações adicionais:
+
+| Comando | Resultado |
+|---|---|
+| `uv run ruff check src tests` | OK |
+| `uv run pytest tests/unit/test_chunking.py -q` | OK — 20 passed |
+| `uv run alembic -c alembic.ini heads` | OK — único head `0004` |

@@ -467,6 +467,16 @@ Gates reexecutados em 2026-08-29 após as correções R6-01–R6-06:
 
 ### T06 — Chunking e indexação ✅
 
+#### Estado vigente após ROUND4
+
+As notas históricas abaixo foram superadas pela implementação append-only por
+`IndexRun`. O comportamento vigente preserva passagens antigas em
+reindexação, associa `ExtractionVersion`, `EmbeddingVersion` e
+`ModelEndpointVersion`, persiste `canonical_fingerprint` (migration `0004`) e
+permite atualização administrativa de edições legadas via
+`rag backfill-fingerprint <edition-id>`. A integração é executada via Podman:
+`make test-integration` resulta em 111 passed e 1 skipped.
+
 Dependências novas declaradas nesta tarefa (dentro do conjunto aprovado,
 NOTES.md §10.1 item 1, ainda não consumidas antes): `httpx==0.28.1`
 (runtime — cliente do adapter de embeddings) e `respx==0.23.1` (dev —

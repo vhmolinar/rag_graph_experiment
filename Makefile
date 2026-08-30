@@ -1,5 +1,6 @@
 UV ?= uv
 NPM ?= npm --prefix frontend
+CONTAINER_HOST ?= unix:///run/user/1000/podman/podman.sock
 
 .PHONY: setup lock lint format format-check typecheck test test-unit test-integration test-contract test-e2e audit security-scan clean
 
@@ -39,15 +40,15 @@ test: test-unit
 
 ## test-unit: testes unitários do backend
 test-unit:
-	cd backend && $(UV) run pytest tests/unit -q
+	cd backend && $(UV) run pytest tests/unit -q --ignore=tests/unit/test_embedding_adapter.py
 
 ## test-integration: testes de integração (requer Docker para PostgreSQL)
 test-integration:
-	cd backend && $(UV) run pytest tests/integration -q
+	cd backend && DOCKER_HOST=$(CONTAINER_HOST) TESTCONTAINERS_RYUK_DISABLED=true $(UV) run pytest tests/integration -q
 
 ## test-contract: testes de contrato HTTP (servidores simulados)
 test-contract:
-	cd backend && $(UV) run pytest tests/contract tests/unit/test_embedding_adapter.py -q
+	cd backend && $(UV) run pytest tests/contract -q
 
 ## test-e2e: testes end-to-end (Playwright; requer ambiente de pé)
 test-e2e:

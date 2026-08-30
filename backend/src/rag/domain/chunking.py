@@ -263,6 +263,8 @@ def _original_text_of(sentences: list[_Sentence]) -> str:
     for sentence in sentences:
         by_block[sentence.block_ordinal] = by_block.get(sentence.block_ordinal, 0) + 1
         totals[sentence.block_ordinal] = sentence.block_sentence_count
+    if any(by_block[ordinal] != totals[ordinal] for ordinal in by_block):
+        return " ".join(sentence.text for sentence in sentences)
     if any(not sentence.original_is_aligned for sentence in sentences) and (
         any(by_block[ordinal] != totals[ordinal] for ordinal in by_block)
         or any(sentence.page_index is not None for sentence in sentences)
@@ -301,6 +303,10 @@ def _node_from_sentences(
         char_start = first.char_start
         char_end = last.char_end
         text = _slice_text(doc, page_start_index, char_start, page_end_index, char_end)
+        # A página é a fonte endereçável da citação PDF. Isso preserva
+        # separadores físicos (inclusive ``\n`` entre blocos) e garante que
+        # o texto citável seja exatamente o intervalo destacado.
+        original_text = text
     return ChunkNode(
         index=index,
         parent_index=parent_index,

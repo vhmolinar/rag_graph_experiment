@@ -2,8 +2,8 @@
 
 from alembic import op
 
-revision = "0003_canonical_fingerprint"
-down_revision = "0002_edition_extraction_warnings"
+revision = "0004"
+down_revision = "0003"
 branch_labels = None
 depends_on = None
 
