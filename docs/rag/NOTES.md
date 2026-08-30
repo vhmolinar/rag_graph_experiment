@@ -604,14 +604,81 @@ português), não bloqueantes; podem ser revistas pelo usuário.
    (`ORDER BY score DESC, fuzzy_score DESC`, onde `fuzzy_score` desempata
    entre os aproximados pela soma das maiores similaridades por termo).
 7. **Nenhuma interpolação de texto do usuário em SQL nem em sintaxe de
-   tsquery.** Frase e cada termo são sempre parâmetros ligados
-   (`%(nome)s`), processados por `phraseto_tsquery`/`plainto_tsquery` (que
-   tratam a entrada como texto puro — nunca interpretam `&`/`|`/`!`/`<->`
-   como operador) e por `similarity()`. Os únicos fragmentos de texto
-   interpolados na string SQL são nomes de coluna/tabela fixos e chaves de
-   parâmetro previsíveis geradas a partir do ÍNDICE da lista
-   (`required_0`, `required_1`, ...) — nunca do conteúdo do termo — mesmo
-   padrão de `VersionsRepository` (T03). `test_repository_never_interpolates_user_text_into_sql`
-   (integração) contorna deliberadamente os validators de domínio
-   (`LexicalQuery.model_construct`) para provar essa propriedade no nível
-   do repository, não só por rejeição antecipada da validação.
+    tsquery.** Frase e cada termo são sempre parâmetros ligados
+    (`%(nome)s`), processados por `phraseto_tsquery`/`plainto_tsquery` (que
+    tratam a entrada como texto puro — nunca interpretam `&`/`|`/`!`/`<->`
+    como operador) e por `similarity()`. Os únicos fragmentos de texto
+    interpolados na string SQL são nomes de coluna/tabela fixos e chaves de
+    parâmetro previsíveis geradas a partir do ÍNDICE da lista
+    (`required_0`, `required_1`, ...) — nunca do conteúdo do termo — mesmo
+    padrão de `VersionsRepository` (T03). `test_repository_never_interpolates_user_text_into_sql`
+    (integração) contorna deliberadamente os validators de domínio
+    (`LexicalQuery.model_construct`) para provar essa propriedade no nível
+    do repository, não só por rejeição antecipada da validação.
+
+### 10.10 Registro do implementador — 2026-08-30 (fase 1, T09)
+
+Interpretações declaradas antes de implementar T09 (busca vetorial, RRF e
+reranking), não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Busca vetorial: cosseno, `score = 1 - distância`.** A métrica padrão da
+   especificação (§8.5). `VectorSearchRepository` ordena por
+   `p.embedding <=> %(query)s::vector` (distância de cosseno) e expõe
+   `score = 1 - distance` (similaridade de cosseno), reaproveitando o índice
+   HNSW `passages_embedding_hnsw` (`vector_cosine_ops`, migration 0001).
+   Filtros por obra/edição são aplicados no SQL ANTES da seleção (AC-07),
+   mesmo padrão de `LexicalSearchRepository` (T08); passagens-pai
+   (`embedding_version_id IS NULL`) nunca são candidatas (NOTES.md §10.6
+   item 2). A dimensão do vetor de consulta é conferida contra
+   `EMBEDDING_COLUMN_DIMENSIONS` antes de consultar (`EmbeddingDimensionError`
+   tipado, falha fechada — nunca um `DataError` cru de psycopg).
+2. **RRF é função pura do domínio (`fuse_rankings`).** Contribuição de cada
+   lista: `1/(k + rank + 1)` com `rank` 0-based (posição na lista); a
+   constante `k` é calibrable por profundidade (NOTES.md §4). Ordenação
+   determinística: score RRF descendente, desempate por `passage_id`
+   ascendente. Sem dependência de framework; testável com casos
+   determinísticos isolados.
+3. **Orçamento por profundidade (`RetrievalBudget`) versionado via
+   `RetrievalPolicyVersion`.** Parâmetros calibráveis por profundidade:
+   `lexical_top_k`, `vector_top_k`, `rrf_k` e `rerank_top_n` (SPEC §8.5:
+   "top_k, constante RRF e rerank_top_n pertencem à política de
+   profundidade"). Valores iniciais conservadores e monotonos por
+   profundidade (brief < standard < deep); calibração no benchmark de T19
+   (NOTES.md §4). `RetrievalPolicy` exige cobertura das três profundidades
+   (sem política parcial silenciosa). `RetrievalService` registra a política
+   (`RetrievalPolicyVersion.params` = dump JSON da política) via
+   `VersionsRepository.get_or_create` — idempotente, nunca sobrescreve.
+4. **`RetrievalService` (application): estágios lexical e vetorial
+   independentes, fusão RRF e reranking; falha do reranker NUNCA é
+   mascarada.** Os dois estágios são executados em separado (SPEC §8.5
+   "recuperar listas lexical e semântica separadamente"), fundidos por RRF e
+   re-rankados pelo provider de reranking. Se o reranking falhar (timeout,
+   5xx, payload inválido, violação de contrato), o erro tipado do provider
+   propagha ao chamador — nunca se devolve a lista fundida como se fora o
+   resultado reranked (checklist §9: "Falha do reranker não é mascarada como
+   sucesso"). Também nunca se devolve prosa sem evidências.
+5. **`RetrievalResult` preserva scores e posições de TODOS os estágios
+   (AC-06).** Modelo frozen com `lexical`, `vector`, `fused` e `reranked`;
+   `answer_run_candidates()` produce o tuple a persistir em
+   `AnswerRun.candidates` (append-only, transições de `runs.py`), mantendo
+   os quatro estágios distintos e rastreáveis. A seleção final de evidências
+   (número de evidências, montagem de contexto) é responsabilidade de T12,
+   não desta tarefa — o orçamento aqui limita candidatos por estágio, não a
+   montação de contexto.
+6. **Paráfrase em fixture (AC-05) com embedding controlado.** Para provar
+   recuperação semântica sem modelo real, o teste injeta embeddings
+   determinísticos por conceito (função local do teste): dois textos são
+   "paráfrases" quando compartam um conceito (palavras distintas mapeam à
+   mesma dimensão). A consulta semântica recupera a passagem-paráfrase mesmo
+   sem compartir termos principais, e a busca lexical para os termos da
+   consulta não a encontra (evidencia da independência dos estágios). O
+   contrato HTTP do provider de embeddings (T06/T07) já é testado em separado
+   com respx; aqui interessa a integração vetorial, não o transporte.
+7. **Reranking "altera a ordem em caso controlado" com o double
+   `FakeRerankerProvider` de T07 (heuristic determinística por sobreposição
+   de termos).** Não é um mock que valida contrato: é uma implementação
+   determinística do Protocol `RerankerProvider` (NOTES.md §10.8 item 7),
+   exercitada em pipeline real (PostgreSQL + RRF). O caso controlado monta
+   uma passagem que domina a fusão RRF (alta em ambos os estágios) mas é
+   superada no reranking por outra com mais termos da consulta — a inversão
+   de ordem é observável e reproduzível.

@@ -14,9 +14,9 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
 | AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); falta o caminho passagem→leitor (T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
-| AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
-| AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
-| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (exclusão por termo/edição/obra aplicada no estágio lexical, contra PostgreSQL real). Falta o estágio vetorial/RRF (T09) e reranking/geração (T13) |
+| AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
+| AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
+| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker). Falta o estágio de geração/verificação (T13) |
 | AC-08 | Modo quote sem texto sintetizado | ◐ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo) |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
@@ -753,6 +753,109 @@ T19 (NOTES.md §4); `required_terms`/`excluded_terms` só aceitam uma palavra
 alfanumérica cada (sem hífen, apóstrofo ou acento de pontuação composta) —
 suficiente para o vocabulário exercitado nesta tarefa, mas uma limitação a
 revisitar se o planejador (T10) precisar repassar termos com esses caracteres.
+
+### T09 — Busca vetorial, RRF e reranking ✅
+
+Nenhuma dependência nova; nenhuma migration nova (reaproveita
+`passages.embedding` vector(1024) e o índice HNSW `vector_cosine_ops` da
+migration 0001). Interpretações registradas em NOTES.md §10.10 antes de
+implementar: busca vetorial por cosseno (`score = 1 - distance`); RRF como
+função pura do domínio (`1/(k + rank + 1)`, rank 0-based, desempate por
+`passage_id`); orçamento por profundidade (`RetrievalBudget`) versionado via
+`RetrievalPolicyVersion`; `RetrievalService` com estágios lexical/vetorial
+independentes e falha do reranker NUNCA mascarada; `RetrievalResult` preserva
+scores/posições de todos os estágios (AC-06); parárfase em fixture com
+embedding controlado por conceito (AC-05).
+
+Entregáveis:
+
+- **`domain/retrieval.py`** (núcleo puro): `RetrievalBudget` (parámetros
+  calibrables por profundidade — `lexical_top_k`, `vector_top_k`, `rrf_k`,
+  `rerank_top_n`), `RetrievalPolicy` (cobre as três profundidades,
+  `defaults()` conservador e monotonos por profundidade), `fuse_rankings`
+  (RRF puro e determinístico) e `RetrievalResult` (scores e posições dos
+  quatro estágios; `answer_run_candidates()` para persistir em
+  `AnswerRun.candidates` append-only).
+- **`infrastructure/repositories/vector.py`** (`VectorSearchRepository`):
+  busca por cosseno (`embedding <=> %(query)s::vector`, `score = 1 -
+  distance`), filtros por obra/edição aplicados no SQL antes da seleção
+  (AC-07), passagens-pai excluídas, dimensão do vetor de consulta validada
+  contra o schema antes de consultar (`EmbeddingDimensionError` falha
+  fechada). Nada do usuário é interpolado — vetor e IDs são parâmetros
+  ligados.
+- **`application/search.py`** (`RetrievalService`): recupera as listas
+  lexical e vetorial em separado (independentes, SPEC §8.5), funde por RRF
+  e rerankana com o provider de reranking; registra a política como
+  `RetrievalPolicyVersion` (idempotente). Falha do reranker (timeout, 5xx,
+  payload inválido, contrato violado) propagha fechada — nunca se devolve a
+  lista fundida como resultado reranked; passagem candidata que deixou de
+  existir entre busca e montação falha fechada (`NotFoundError`).
+
+Testes/evidências:
+
+- RRF determinístico (unit, `test_retrieval.py::TestFuseRankings`):
+  contribuição `1/(k+rank+1)`, soma entre listas, passagem só numa lista,
+  desempate determinístico por `passage_id`, listas vazias, `k<=0` rejeitado,
+  listas de entrada não mutadas.
+- Orçamento por profundidade (unit, `TestRetrievalBudgetAndPolicy`):
+  defaults cobrem as três profundidades e crescem com elas; política
+  parcial ou com profundidade duplicada é rejeitada; valores inválidos
+  rejeitados; `model_dump(mode="json")` armazenável como params de
+  `RetrievalPolicyVersion` (AC-15).
+- `RetrievalResult` (unit, `TestRetrievalResult`): os quatro estágios
+  preservados e persistíveis em `AnswerRun.candidates` com a regra
+  append-only intacta (AC-06).
+- Parárfase recuperada em fixture (integração, `test_vector_search.py`):
+  `test_paraphrase_recovered_by_vector_search` (AC-05 — parárfase sem termos
+  principais recuperada via cosseno, score ≈ 1.0),
+  `test_lexical_does_not_recover_paraphrase` (independência: a busca literal
+  pelos termos da parárfase não encontra a passagem),
+  `test_cosine_score_is_similarity` (métrica documentada),
+  `test_parent_passages_are_never_candidates`,
+  `test_filter_by_edition`/`test_filter_by_work` (AC-07 no estágio vetorial),
+  `test_limit_respected`, `test_no_results_returns_empty_list`,
+  `test_query_vector_dimension_mismatch_fails_closed`,
+  `test_hostile_filter_ids_are_parameters`.
+- Pipeline completo (integração, `test_retrieval_pipeline.py`):
+  `test_pipeline_preserves_all_stages_and_fuses_deterministically` (AC-06 —
+  scores RRF determinísticos 2/61, 1/62, 1/63; estágios preservados),
+  `test_reranker_changes_order_in_controlled_case` (o reranker altera a ordem
+  num caso controlado: `[A,B,C]` fundido → `[B,A,C]` reranked),
+  `test_excluded_work_never_reaches_reranker` (AC-07 — obra excluída não
+  aparece em nenhum estágio e seu texto nunca é enviado ao provider),
+  `test_reranker_failure_is_not_masked` (falha do reranker propagha fechada),
+  `test_policy_version_is_registered_and_reusable` (AC-15 — mesma política,
+  mesma versão, params reproduzíveis),
+  `test_empty_candidates_returns_empty_reranked`.
+
+Comandos executados em 2026-08-30 (Linux; Python 3.12; PostgreSQL real via
+testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
+`TESTCONTAINERS_RYUK_DISABLED=true`):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK |
+| `uv run ruff format --check src tests` | OK — 89 arquivos |
+| `uv run mypy src tests` | OK — 89 arquivos, strict |
+| `uv run pytest tests/unit -q` | OK — 349 passed, 3 skipped |
+| `uv run pytest tests/integration -q` | OK — 133 passed, 1 skipped (PostgreSQL real via testcontainers) |
+| `bash scripts/audit.sh` | OK — 0 vulnerabilidades (pip-audit --strict + npm audit) |
+| `python3 scripts/security_scan.py .` | OK — nenhum IOC bloqueado |
+
+Critérios: AC-05 (parárfase recuperada via cosseno — coberto integralmente),
+AC-06 (scores/posições lexical, vetorial, RRF e reranking registrados e
+preservados — coberto), AC-07 (exclusão de obra comprovada nos estágios
+lexical, vetorial, fusão e reranking — resta o estágio de geração/verificação
+T13 para a cobertura completa).
+
+Limitações conhecidas: o orçamento por profundidade usa valores iniciais
+conservadores (brief < standard < deep) ainda não calibrados — o benchmark de
+T19 é o ponto de calibração (NOTES.md §4); a tolerância trigram e os vetores
+de consulta usam o schema fixo vector(1024) (migration 0001); o pipeline de
+recuperação ainda não está conectado à geração/contexto (T12/T13), que
+consumirão `RetrievalResult`/`RetrievalService`; os testes de integração foram
+executados neste ambiente via podman (sem Docker) com ryuk desativado —
+equivalente em Docker requere o mesmo fluxo de `testcontainers`.
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

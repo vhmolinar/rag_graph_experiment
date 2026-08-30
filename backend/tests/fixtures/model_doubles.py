@@ -8,6 +8,7 @@ de exceções para simular falhas transitórias antes do comportamento normal.
 """
 
 import hashlib
+import re
 from collections import deque
 from collections.abc import Callable, Sequence
 
@@ -52,6 +53,43 @@ class FakeEmbeddingProvider:
         self._maybe_fail()
         self.calls.append(text)
         return _deterministic_vector(text, self.dimensions)
+
+
+_CONCEPT_WORDS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("fate", frozenset({"destino", "spleen", "fado"})),
+    ("memory", frozenset({"memória", "lembrança", "recordação"})),
+    ("jealousy", frozenset({"ciúme", "ciume", "desconfiança", "inveja"})),
+    ("freedom", frozenset({"liberdade", "autonomia"})),
+)
+
+
+def concept_embedding(text: str, dimensions: int = 1024) -> list[float]:
+    """Vetor determinístico por conceito (T09, AC-05).
+
+    Palavras DISTINTAS do mesmo conceito mapeam à mesma dimensão: dois textos
+    podem ser "paráfrases" (sem termos principais comuns) e ainda ter vetores
+    próximos. A função é local às fixtures de teste — não é um modelo real.
+    """
+    words = set(re.findall(r"\w+", text.lower(), flags=re.UNICODE))
+    vector = [0.0] * dimensions
+    for index, (_, synonyms) in enumerate(_CONCEPT_WORDS):
+        if words & synonyms:
+            vector[index] = 1.0
+    return vector
+
+
+class ConceptEmbeddingProvider:
+    """Double de `EmbeddingProvider`: parárfase (mesmo conceito, palavras
+    distintas) -> vetor próximo. Determinístico, sem rede."""
+
+    def __init__(self, dimensions: int = 1024) -> None:
+        self.dimensions = dimensions
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [concept_embedding(text, self.dimensions) for text in texts]
+
+    async def embed_query(self, text: str) -> list[float]:
+        return concept_embedding(text, self.dimensions)
 
 
 class FakeRerankerProvider:
