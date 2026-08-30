@@ -47,7 +47,7 @@ test-integration:
 
 ## test-contract: testes de contrato HTTP (servidores simulados)
 test-contract:
-	cd backend && $(UV) run pytest tests/contract -q
+	cd backend && $(UV) run pytest tests/contract tests/unit/test_embedding_adapter.py -q
 
 ## test-e2e: testes end-to-end (Playwright; requer ambiente de pé)
 test-e2e:

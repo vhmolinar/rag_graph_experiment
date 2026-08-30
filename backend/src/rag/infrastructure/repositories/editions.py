@@ -23,11 +23,14 @@ class EditionsRepository:
                     INSERT INTO editions (id, work_id, title, publisher, publication_year,
                                           isbn, edition_label, source_type, source_sha256,
                                           license_status, ingestion_status, extraction_warnings,
+                                          canonical_fingerprint,
                                           created_at)
                     VALUES (%(id)s, %(work_id)s, %(title)s, %(publisher)s,
                             %(publication_year)s, %(isbn)s, %(edition_label)s,
                             %(source_type)s, %(source_sha256)s, %(license_status)s,
-                            %(ingestion_status)s, %(extraction_warnings)s, %(created_at)s)
+                            %(ingestion_status)s, %(extraction_warnings)s,
+                            %(canonical_fingerprint)s,
+                            %(created_at)s)
                     """,
                     {
                         "id": edition.id,
@@ -42,6 +45,7 @@ class EditionsRepository:
                         "license_status": edition.license_status.value,
                         "ingestion_status": edition.ingestion_status.value,
                         "extraction_warnings": json.dumps(list(edition.extraction_warnings)),
+                        "canonical_fingerprint": edition.canonical_fingerprint,
                         "created_at": edition.created_at,
                     },
                 )
@@ -80,7 +84,7 @@ class EditionsRepository:
             await cur.execute(
                 "SELECT id, work_id, title, publisher, publication_year, isbn, "
                 "edition_label, source_type, source_sha256, license_status, "
-                "ingestion_status, extraction_warnings, created_at "
+                "ingestion_status, extraction_warnings, canonical_fingerprint, created_at "
                 "FROM editions WHERE id = %s",
                 (edition_id,),
             )

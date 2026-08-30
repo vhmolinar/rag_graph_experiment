@@ -72,6 +72,7 @@ class Edition(BaseModel):
     ingestion_status: IngestionStatus = IngestionStatus.PENDING
     derived_artifacts: list[DerivedArtifactRef] = Field(default_factory=list)
     extraction_warnings: tuple[str, ...] = Field(default_factory=tuple)
+    canonical_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     id: UUID = Field(default_factory=uuid4)
     created_at: AwareDatetime = Field(default_factory=utcnow)
 

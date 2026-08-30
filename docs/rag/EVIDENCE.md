@@ -532,7 +532,7 @@ Testes/evidências:
   `test_embedding_count_mismatch_fails_before_persisting` (ambos confirmam
   ZERO passagens persistidas após a falha);
 - idempotência/`--force`: `test_reindex_without_force_is_idempotent`,
-  `test_force_reindexes_and_replaces_passages`;
+  `test_force_reindexes_preserves_passage_history`;
 - contrato HTTP do adapter de embeddings: 14 testes em
   `test_embedding_adapter.py` (respx — sucesso, timeout, erro de conexão,
   429 com/sem `Retry-After`, 5xx, 4xx, corpo malformado, contagem/dimensão

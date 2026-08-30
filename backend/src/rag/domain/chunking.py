@@ -116,6 +116,8 @@ class _Sentence:
     text: str
     block_ordinal: int
     block_original_text: str
+    original_is_aligned: bool
+    block_sentence_count: int
 
 
 def approximate_token_count(text: str) -> int:
@@ -178,7 +180,8 @@ def _leaf_runs(doc: CanonicalDocument) -> list[list[_Sentence]]:
                 runs.append(current_run)
             current_run = []
             current_path = block.section_path
-        for local_start, local_end in split_sentences(block.text):
+        spans = split_sentences(block.text)
+        for local_start, local_end in spans:
             sentence_text = block.text[local_start:local_end]
             if not sentence_text.strip():
                 continue
@@ -193,6 +196,8 @@ def _leaf_runs(doc: CanonicalDocument) -> list[list[_Sentence]]:
                     sentence_text,
                     block.ordinal,
                     block.original_text,
+                    block.original_text == block.text,
+                    len(spans),
                 )
             )
     if current_run:
@@ -251,6 +256,18 @@ def _original_text_of(sentences: list[_Sentence]) -> str:
     """Concatena o original dos blocos que contribuíram para o chunk, na
     ordem, sem repetir o mesmo bloco quando várias de suas sentenças caem no
     mesmo chunk (T6-05)."""
+    # Sem alinhamento confiável, o texto normalizado é a única fatia exata
+    # conhecida; nunca promovemos o bloco inteiro como citação de um filho.
+    by_block: dict[int, int] = {}
+    totals: dict[int, int] = {}
+    for sentence in sentences:
+        by_block[sentence.block_ordinal] = by_block.get(sentence.block_ordinal, 0) + 1
+        totals[sentence.block_ordinal] = sentence.block_sentence_count
+    if any(not sentence.original_is_aligned for sentence in sentences) and (
+        any(by_block[ordinal] != totals[ordinal] for ordinal in by_block)
+        or any(sentence.page_index is not None for sentence in sentences)
+    ):
+        return " ".join(sentence.text for sentence in sentences)
     parts: list[str] = []
     last_block: int | None = None
     for sentence in sentences:

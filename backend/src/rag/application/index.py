@@ -244,12 +244,6 @@ class IndexingService:
             id_by_node_index: dict[int, UUID] = {}
             for node in nodes:
                 section = section_by_path.get(node.section_path)
-                if section is None:  # pragma: no cover - validado acima
-                    raise IngestionError(
-                        "Chunk referencia seção sem correspondência persistida "
-                        "(inesperado após validação de reextração).",
-                        context={"edition_id": str(edition.id)},
-                    )
                 page_start = self._resolve_page(
                     edition, node.page_start_index, page_by_physical_index
                 )
@@ -262,7 +256,7 @@ class IndexingService:
                     original_text=node.original_text,
                     token_count=node.token_count,
                     chunking_version_id=chunking_version.id,
-                    section_id=section.id,
+                    section_id=section.id if section is not None else None,
                     page_start_id=page_start.id if page_start is not None else None,
                     page_end_id=page_end.id if page_end is not None else None,
                     char_start=node.char_start,
@@ -356,6 +350,14 @@ class IndexingService:
         chunk ser gerado ou persistido. O contexto do erro nunca inclui
         texto do livro — apenas contagens e índices estruturais (T5-10)."""
         expected_sections = {tuple(s.path): s for s in derive_sections(edition.id, canonical)}
+        if (
+            edition.canonical_fingerprint is not None
+            and canonical.fingerprint() != edition.canonical_fingerprint
+        ):
+            raise IngestionError(
+                "Reextração diverge da representação canônica persistida na ingestão.",
+                context={"edition_id": str(edition.id)},
+            )
         persisted_by_path = {tuple(s.path): s for s in persisted_sections}
         if set(expected_sections) != set(persisted_by_path):
             raise IngestionError(

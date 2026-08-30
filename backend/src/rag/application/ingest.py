@@ -245,6 +245,7 @@ class IngestionService:
                     license_status=metadata.license_status,
                     derived_artifacts=[ocr_ref] if ocr_ref else [],
                     extraction_warnings=canonical.warnings,
+                    canonical_fingerprint=canonical.fingerprint(),
                 )
             )
             sections = derive_sections(edition.id, canonical)
