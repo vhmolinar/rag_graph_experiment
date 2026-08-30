@@ -600,10 +600,14 @@ não bloqueantes; podem ser revistas pelo usuário.
    arquitetura; refinamentos para honrar SPEC §11 e AC-14/AC-16 que a
    implementação anterior não atendia integralmente:
 
-   - **T7-01** — `GenerationEndpointSettings.max_retries` agora tem default `0`.
-     `POST /chat/completions` não é idempotente (retentar pode reexecutar uma
-     geração já processada, consumir recursos e produzir resposta diferente).
-     Retries continuam permitidos para embedding e reranking (idempotentes).
+   - **T7-01** — `GenerationEndpointSettings.max_retries` agora é `Literal[0]`
+     (não apenas default 0): a geração NUNCA retenta. `POST /chat/completions`
+     não é idempotente (retentar pode reexecutar uma geração já processada,
+     consumir recursos e produzir resposta diferente). `Literal[0]` rejeita
+     `max_retries != 0` na construção (inclusive via `GENERATOR_MAX_RETRIES`),
+     garantido por `test_non_zero_max_retries_is_rejected` e
+     `test_env_non_zero_max_retries_is_rejected`. Retries continuam permitidos
+     para embedding e reranking (idempotentes).
    - **T7-02** — A regra T6-04 (credencial só sobre `https://`) foi centralizada
      em `HttpEndpointSettings` e vale para os três endpoints, incluindo
      generator e reranker. Mensagens de erro não citam chave, URL nem caminho.

@@ -17,6 +17,7 @@ por requisição — não altera o timeout padrão do cliente HTTP.
 
 import asyncio
 import json
+from typing import Literal
 
 import httpx
 from pydantic import Field, ValidationError
@@ -48,10 +49,12 @@ class GenerationEndpointSettings(HttpEndpointSettings):
 
     `POST /chat/completions` NÃO é idempotente (uma nova geração pode
     consumir recursos e produzir conteúdo diferente para a mesma execução, se
-    a primeira chamada já tiver sido processada). Por isso `max_retries` tem
-    default 0 (SPEC §11: retries apenas para falhas transitórias E operações
-    idempotentes — T7-01). A validação de URL/credencial vem de
-    `HttpEndpointSettings`.
+    a primeira chamada já tiver sido processada). Por isso a geração NUNCA é
+    retentada: `max_retries` é fixado em `Literal[0]` (SPEC §11: retries
+    apenas para falhas transitórias E operações idempotentes — T7-01).
+    Qualquer valor diferente de zero é rejeitado na construção, seja via
+    construtor, seja via `GENERATOR_MAX_RETRIES` (R2-T7-01). A validação de
+    URL/credencial vem de `HttpEndpointSettings`.
     """
 
     model_config = SettingsConfigDict(env_prefix="GENERATOR_", extra="ignore")
@@ -60,7 +63,7 @@ class GenerationEndpointSettings(HttpEndpointSettings):
     model: str = "qwen3-instruct"
     timeout_seconds: float = Field(default=60.0, gt=0)
     deep_timeout_seconds: float = Field(default=180.0, gt=0)
-    max_retries: int = Field(default=0, ge=0)
+    max_retries: Literal[0] = 0
 
 
 def _headers(settings: GenerationEndpointSettings) -> dict[str, str]:

@@ -100,6 +100,18 @@ class TestGenerationEndpointSettings:
         with pytest.raises(ValidationError):
             _settings(max_retries=-1)
 
+    def test_non_zero_max_retries_is_rejected(self) -> None:
+        # R2-T7-01: geração NUNCA é retentada — configurando retries via
+        # construtor deve falhar (Literal[0]), não apenas por default.
+        with pytest.raises(ValidationError):
+            _settings(max_retries=1)
+
+    def test_env_non_zero_max_retries_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # R2-T7-01: GENERATOR_MAX_RETRIES=1 não pode reativar retry.
+        monkeypatch.setenv("GENERATOR_MAX_RETRIES", "1")
+        with pytest.raises(ValidationError):
+            GenerationEndpointSettings(base_url=_BASE_URL, model="qwen3-instruct")
+
     def test_zero_max_concurrency_is_rejected(self) -> None:
         with pytest.raises(ValidationError):
             _settings(max_concurrency=0)
