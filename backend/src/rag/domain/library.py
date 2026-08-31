@@ -72,6 +72,7 @@ class Edition(BaseModel):
     ingestion_status: IngestionStatus = IngestionStatus.PENDING
     derived_artifacts: list[DerivedArtifactRef] = Field(default_factory=list)
     extraction_warnings: tuple[str, ...] = Field(default_factory=tuple)
+    canonical_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     id: UUID = Field(default_factory=uuid4)
     created_at: AwareDatetime = Field(default_factory=utcnow)
 
@@ -147,7 +148,16 @@ class Page(BaseModel):
 
 class Passage(BaseModel):
     """Unidade citável. `context_header` é metadado de recuperação e NUNCA faz
-    parte do texto citável — apenas `text` pode ser citado (AC-08/AC-12)."""
+    parte do texto citável (AC-08/AC-12).
+
+    `original_text`, quando presente, preserva o texto exato dos blocos
+    canônicos de origem (T6-05 — antes da normalização do chunker) e é o
+    campo que alimenta a citação literal (`citable_text`); `text`
+    (normalizado) continua sendo a base de busca lexical/embeddings.
+    `index_run_id` associa a passagem à execução de indexação que a
+    produziu (T6-01) — `None` apenas para linhas fora do fluxo de `rag
+    index` (ex.: fixtures de teste de repository).
+    """
 
     edition_id: UUID
     ordinal: int = Field(ge=0)
@@ -162,6 +172,8 @@ class Passage(BaseModel):
     context_header: str = Field(default="", max_length=1000)
     parent_passage_id: UUID | None = None
     embedding_version_id: UUID | None = None
+    original_text: str | None = Field(default=None, min_length=1, max_length=_MAX_TEXT)
+    index_run_id: UUID | None = None
     id: UUID = Field(default_factory=uuid4)
 
     @model_validator(mode="after")
@@ -178,5 +190,6 @@ class Passage(BaseModel):
 
     @property
     def citable_text(self) -> str:
-        """Único texto que pode aparecer como citação literal."""
-        return self.text
+        """Único texto que pode aparecer como citação literal (T6-05: o
+        original preservado do bloco canônico, quando disponível)."""
+        return self.original_text if self.original_text is not None else self.text

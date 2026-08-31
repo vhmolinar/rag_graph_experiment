@@ -85,12 +85,21 @@ class ChunkNode:
     id até a inserção no banco; `parent_index` referencia esse mesmo índice
     (`None` para nós pai). `page_start_index`/`page_end_index` são índices
     físicos (0-based) em `CanonicalDocument.pages`; `None` para EPUB.
+
+    `original_text` (T6-05) preserva o texto original dos blocos canônicos
+    que compõem o chunk — granularidade de bloco, não de sentença: quando um
+    corte de janela cai no meio de um bloco, ambos os chunks resultantes
+    incluem o original inteiro daquele bloco (inclusão seguramente
+    redundante, nunca corrompida). `text` (normalizado) continua sendo a
+    base de busca/embeddings; `original_text` é o que alimenta a citação
+    literal.
     """
 
     index: int
     parent_index: int | None
     section_path: tuple[str, ...]
     text: str
+    original_text: str
     token_count: int
     page_start_index: int | None
     page_end_index: int | None
@@ -105,6 +114,10 @@ class _Sentence:
     char_start: int | None
     char_end: int | None
     text: str
+    block_ordinal: int
+    block_original_text: str
+    original_is_aligned: bool
+    block_sentence_count: int
 
 
 def approximate_token_count(text: str) -> int:
@@ -167,14 +180,25 @@ def _leaf_runs(doc: CanonicalDocument) -> list[list[_Sentence]]:
                 runs.append(current_run)
             current_run = []
             current_path = block.section_path
-        for local_start, local_end in split_sentences(block.text):
+        spans = split_sentences(block.text)
+        for local_start, local_end in spans:
             sentence_text = block.text[local_start:local_end]
             if not sentence_text.strip():
                 continue
             char_start = block.char_start + local_start if block.char_start is not None else None
             char_end = block.char_start + local_end if block.char_start is not None else None
             current_run.append(
-                _Sentence(block.section_path, block.page_index, char_start, char_end, sentence_text)
+                _Sentence(
+                    block.section_path,
+                    block.page_index,
+                    char_start,
+                    char_end,
+                    sentence_text,
+                    block.ordinal,
+                    block.original_text,
+                    block.original_text == block.text,
+                    len(spans),
+                )
             )
     if current_run:
         runs.append(current_run)
@@ -228,10 +252,38 @@ def _slice_text(
     return "\n".join(parts)
 
 
+def _original_text_of(sentences: list[_Sentence]) -> str:
+    """Concatena o original dos blocos que contribuíram para o chunk, na
+    ordem, sem repetir o mesmo bloco quando várias de suas sentenças caem no
+    mesmo chunk (T6-05)."""
+    # Sem alinhamento confiável, o texto normalizado é a única fatia exata
+    # conhecida; nunca promovemos o bloco inteiro como citação de um filho.
+    by_block: dict[int, int] = {}
+    totals: dict[int, int] = {}
+    for sentence in sentences:
+        by_block[sentence.block_ordinal] = by_block.get(sentence.block_ordinal, 0) + 1
+        totals[sentence.block_ordinal] = sentence.block_sentence_count
+    if any(by_block[ordinal] != totals[ordinal] for ordinal in by_block):
+        return " ".join(sentence.text for sentence in sentences)
+    if any(not sentence.original_is_aligned for sentence in sentences) and (
+        any(by_block[ordinal] != totals[ordinal] for ordinal in by_block)
+        or any(sentence.page_index is not None for sentence in sentences)
+    ):
+        return " ".join(sentence.text for sentence in sentences)
+    parts: list[str] = []
+    last_block: int | None = None
+    for sentence in sentences:
+        if sentence.block_ordinal != last_block:
+            parts.append(sentence.block_original_text)
+            last_block = sentence.block_ordinal
+    return "\n".join(parts)
+
+
 def _node_from_sentences(
     doc: CanonicalDocument, index: int, parent_index: int | None, sentences: list[_Sentence]
 ) -> ChunkNode:
     first, last = sentences[0], sentences[-1]
+    original_text = _original_text_of(sentences)
     if first.page_index is None:  # EPUB: sem endereçamento por página
         text = " ".join(s.text for s in sentences)
         page_start_index = page_end_index = char_start = char_end = None
@@ -251,11 +303,16 @@ def _node_from_sentences(
         char_start = first.char_start
         char_end = last.char_end
         text = _slice_text(doc, page_start_index, char_start, page_end_index, char_end)
+        # A página é a fonte endereçável da citação PDF. Isso preserva
+        # separadores físicos (inclusive ``\n`` entre blocos) e garante que
+        # o texto citável seja exatamente o intervalo destacado.
+        original_text = text
     return ChunkNode(
         index=index,
         parent_index=parent_index,
         section_path=first.section_path,
         text=text,
+        original_text=original_text,
         token_count=approximate_token_count(text),
         page_start_index=page_start_index,
         page_end_index=page_end_index,

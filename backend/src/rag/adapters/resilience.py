@@ -42,7 +42,12 @@ class _State(Enum):
 
 class CircuitBreaker:
     """Máquina de estados simples: abre após N falhas consecutivas; permite
-    uma tentativa de teste (half-open) após o tempo de reset."""
+    UMA tentativa de teste (half-open) após o tempo de reset.
+
+    Enquanto uma probe half-open está em andamento (aguardando a resposta do
+    endpoint), quaisquer outras chamadas são rejeitadas — só uma tentativa de
+    teste chega ao endpoint por ciclo de reset (T7-04).
+    """
 
     def __init__(
         self,
@@ -59,23 +64,36 @@ class CircuitBreaker:
         self._state = _State.CLOSED
         self._consecutive_failures = 0
         self._opened_at = 0.0  # só significativo enquanto _state is OPEN
+        self._probe_in_progress = False
 
     @property
     def is_open(self) -> bool:
         return self._state is _State.OPEN
 
     def before_call(self) -> None:
-        if self._state is not _State.OPEN:
+        if self._state is _State.CLOSED:
             return
+        if self._state is _State.HALF_OPEN:
+            # T7-04: já existe uma tentativa de teste em andamento — não
+            # libera uma segunda. `before_call` não tem `await`, então o
+            # check-e-set é atômico dentro do loop de eventos.
+            if self._probe_in_progress:
+                raise CircuitBreakerOpenError()
+            self._probe_in_progress = True
+            return
+        # _State is OPEN
         if self._clock() - self._opened_at < self._reset_timeout_seconds:
             raise CircuitBreakerOpenError()
         self._state = _State.HALF_OPEN
+        self._probe_in_progress = True
 
     def on_success(self) -> None:
         self._state = _State.CLOSED
         self._consecutive_failures = 0
+        self._probe_in_progress = False
 
     def on_failure(self) -> None:
+        self._probe_in_progress = False
         if self._state is _State.HALF_OPEN:
             self._state = _State.OPEN
             self._opened_at = self._clock()
