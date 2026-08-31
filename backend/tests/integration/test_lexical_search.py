@@ -6,6 +6,7 @@ obra/edição exercitados via SQL real; entrada adversarial confirma que nada
 """
 
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
@@ -579,13 +580,29 @@ async def test_limit_is_respected(db: Database) -> None:
     assert len(hits) == 1
 
 
-@pytest.mark.parametrize("limit", [0, -1, MAX_SEARCH_LIMIT + 1])
-async def test_invalid_limit_is_rejected(db: Database, limit: int) -> None:
-    """T8-03: `limit` não-positivo ou acima do teto é rejeitado na fronteira
-    do repository — `LIMIT -1`/`LIMIT 0` no PostgreSQL não truncam como se
-    espera e recuperariam o acervo inteiro, violando o orçamento de T09."""
+@pytest.mark.parametrize("limit", [0, -1, MAX_SEARCH_LIMIT + 1, 1.5, True, "3"])
+async def test_invalid_limit_is_rejected(db: Database, limit: object) -> None:
+    """T8-03/R2-T8-03: `limit` não-inteiro (float, bool, string numérica) ou
+    fora da faixa é rejeitado na fronteira do repository — `LIMIT -1`/`LIMIT
+    0` no PostgreSQL não truncam como se espera, `True` equivale a 1 e um
+    float passaria nas comparações de faixa, violando o orçamento de T09."""
     async with db.connection() as conn:
-        with pytest.raises(ValueError, match="limit deve ser um inteiro entre 1 e"):
+        with pytest.raises(ValueError, match="limit deve ser um inteiro"):
             await LexicalSearchRepository(conn).search(
-                LexicalQuery(required_terms=("ciume",)), limit=limit
+                LexicalQuery(required_terms=("ciume",)),
+                limit=limit,  # type: ignore[arg-type]
             )
+
+
+async def test_invalid_limit_rejected_before_obtaining_cursor(db: Database) -> None:
+    """R2-T8-03: a rejeição de tipo de `limit` ocorre ANTES de obter cursor ou
+    executar SQL — nunca vira erro tardio do driver (semântica de limite
+    não intencional)."""
+    conn = MagicMock()
+    repository = LexicalSearchRepository(conn)
+    with pytest.raises(ValueError, match="limit deve ser um inteiro"):
+        await repository.search(
+            LexicalQuery(required_terms=("ciume",)),
+            limit=True,
+        )
+    conn.cursor.assert_not_called()

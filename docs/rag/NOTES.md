@@ -722,14 +722,21 @@ português), não bloqueantes; podem ser revistas pelo usuário.
    da mesma edição; a inativa nunca é candidata; o histórico permanece no
    banco).
 
-9. **`limit` é validado na fronteira do repository (T8-03).** O orçamento de
-   candidatos que T09 controla não pode ser burlado por um valor que o
-   PostgreSQL interprete silenciosamente: `LIMIT -1` = ausência de limite e
-   `LIMIT 0` não é erro. `search()` valida `1 <= limit <= MAX_SEARCH_LIMIT`
-   (constante de módulo, default 100; default do parâmetro segue 20) e
-   levanta `ValueError` fora da faixa, antes de qualquer SQL. O teto fixo é
-   o "ponto que deve ser calibrado" de NOTES.md §4 (quantidade de candidatos
-   lexical) — se o benchmark de T19 indicar outro valor, basta ajustar a
-   constante e a revisão acompanha (nenhuma migration/schema mudou). Testes:
-   `::test_limit_is_respected` e `::test_invalid_limit_is_rejected`
-   (parametrizado sobre 0, -1 e `MAX_SEARCH_LIMIT + 1`).
+9. **`limit` é validado na fronteira do repository (T8-03/R2-T8-03).** O
+   orçamento de candidatos que T09 controla não pode ser burlado por um valor
+   que o PostgreSQL interprete silenciosamente: `LIMIT -1` = ausência de
+   limite e `LIMIT 0` não é erro. `search()` valida TIPO e faixa antes de
+   qualquer SQL: `bool` é subtipo de `int` no Python (`True == 1`) e `1.5`
+   passa nas comparações de faixa, então ambos são rejeitados explicitamente
+   (`isinstance(limit, bool) or not isinstance(limit, int)`), assim como uma
+   string numérica. Em seguida exige `1 <= limit <= MAX_SEARCH_LIMIT`
+   (constante de módulo, default 100; default do parâmetro segue 20).
+   Strings numéricas são rejeitadas mesmo sendo coercíveis porque a fronteira
+   deste repository consome apenas inteiros internos (T09), não entrada de
+   usuário. O teto fixo é o "ponto que deve ser calibrado" de NOTES.md §4 —
+   se o benchmark de T19 indicar outro valor, basta ajustar a constante e a
+   revisão acompanha (nenhuma migration/schema mudou). Testes:
+   `::test_limit_is_respected`, `::test_invalid_limit_is_rejected`
+   (parametrizado sobre 0, -1, `MAX_SEARCH_LIMIT + 1`, 1.5, `True` e `"3"`) e
+   `::test_invalid_limit_rejected_before_obtaining_cursor` (a rejeição ocorre
+   antes de obter cursor/executar SQL).

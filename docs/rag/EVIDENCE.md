@@ -817,21 +817,29 @@ nova; nenhuma migration nova. Correções:
   ambas as obras/edições para provar que o predicado é aplicado no SQL
   (não que uma busca sem resultado devolve lista vazia).
 - **T8-03 (correção importante)** — `limit` validado na fronteira do
-  repository: `1 <= limit <= MAX_SEARCH_LIMIT` (constante `MAX_SEARCH_LIMIT`,
-  default 100; default do parâmetro segue 20), com `ValueError` fora da
-  faixa — `LIMIT -1`/`LIMIT 0` no PostgreSQL não truncam como esperado e
-  recuperariam o acervo inteiro, violando o orçamento controlado por T09
-  (NOTES.md §10.9 item 9). Evidências: `test_limit_is_respected`
-  (limite é um teto real), `test_invalid_limit_is_rejected` (parametrizado
-  sobre 0, -1 e `MAX_SEARCH_LIMIT + 1`).
+  repository (refinada em R2-T8-03 para validação de TIPO): a rejeição ocorre
+  ANTES de qualquer comparação de faixa ou SQL. `bool` é subtipo de `int` no
+  Python (`True == 1`) e `1.5` passa nas comparações de faixa, então ambos são
+  barrados explicitamente (`isinstance(limit, bool) or not isinstance(limit,
+  int)`), junto com string numérica; em seguida `1 <= limit <=
+  MAX_SEARCH_LIMIT` (constante `MAX_SEARCH_LIMIT`, default 100; default do
+  parâmetro segue 20), com `ValueError` — `LIMIT -1`/`LIMIT 0` no PostgreSQL
+  não truncam como esperado e recuperariam o acervo inteiro, violando o
+  orçamento controlado por T09 (NOTES.md §10.9 item 9). Evidências:
+  `test_limit_is_respected` (limite é um teto real),
+  `test_invalid_limit_is_rejected` (parametrizado sobre 0, -1,
+  `MAX_SEARCH_LIMIT + 1`, 1.5, `True` e uma string numérica) e
+  `test_invalid_limit_rejected_before_obtaining_cursor` (rejeição antes de
+  obter cursor/executar SQL).
 
-Comandos reexecutados em 2026-08-30 após as correções T8-01/T8-02/T8-03:
+Comandos reexecutados em 2026-08-30 após as correções T8-01/T8-02/T8-03 e a
+refinamento R2-T8-03:
 
 | Comando | Resultado |
 |---------|-----------|
-| `cd backend && uv run pytest tests/integration/test_lexical_search.py -q` (Docker/Podman conforme ambiente) | OK — 22 passed |
+| `cd backend && uv run pytest tests/integration/test_lexical_search.py -q` (Docker/Podman conforme ambiente) | OK — 26 passed |
 | `cd backend && uv run pytest tests/unit tests/contract -q` | OK — 378 passed, 3 skipped |
-| `cd backend && uv run pytest tests/integration -q` (Docker/Podman) | OK — 138 passed, 1 skipped |
+| `cd backend && uv run pytest tests/integration -q` (Docker/Podman) | OK — 142 passed, 1 skipped |
 | `make lint` | OK (ruff + eslint) |
 | `make format-check` | OK (ruff format + prettier) |
 | `make typecheck` | OK (mypy strict 86 arquivos; tsc) |

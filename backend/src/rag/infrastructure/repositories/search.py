@@ -77,6 +77,16 @@ class LexicalSearchRepository:
         filters: EditionFilter | None = None,
         limit: int = 20,
     ) -> list[RankedCandidate]:
+        # R2-T8-03: validação de TIPO em runtime, antes de qualquer comparação
+        # de faixa — anotação de tipo não é validação no Python. `bool` é
+        # subtipo de `int` (`True == 1`), então precisa ser rejeitado
+        # explicitamente; um `float` como `1.5` passa nas comparações de faixa
+        # e chegaria ao SQL (ou falharia tarde no driver) se não barrado aqui.
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError(
+                "limit deve ser um inteiro: valores bool e float são rejeitados; "
+                "uma string numérica também não é aceita."
+            )
         if limit < 1 or limit > MAX_SEARCH_LIMIT:
             raise ValueError(
                 f"limit deve ser um inteiro entre 1 e {MAX_SEARCH_LIMIT} (recebido {limit}) — "
