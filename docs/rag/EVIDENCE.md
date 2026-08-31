@@ -16,7 +16,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ⬜ | T09/T19 |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ◐ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions` (persistência JSONB dos 4 estágios) |
-| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (exclusão por termo/edição/obra aplicada no estágio lexical, contra PostgreSQL real). Falta o estágio vetorial/RRF (T09) e reranking/geração (T13) |
+| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work`, `test_filter_include_edition`, `test_filter_exclude_work` (inclusão/exclusão por edição e obra aplicadas no SQL — estágio lexical, contra PostgreSQL real; os novos casos combinam uma consulta com candidatos elegíveis nas duas polaridades para provar que o predicado filtra, não que uma busca sem resultado devolve lista vazia). Falta o estágio vetorial/RRF (T09) e reranking/geração (T13) |
 | AC-08 | Modo quote sem texto sintetizado | ◐ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo) |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
@@ -24,7 +24,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10/T14/T15/T16 |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T7-01: `test_generation_adapter.py::test_timeout_raises_model_timeout_error`/`test_5xx_raises_model_unavailable_error`/`test_connection_error_raises_model_unavailable_error` (geração NÃO retenta operação não idempotente — uma única chamada HTTP, default `max_retries=0`) + `test_default_max_retries_is_zero`; R2-T7-01: `test_generation_adapter.py::test_non_zero_max_retries_is_rejected` e `test_env_non_zero_max_retries_is_rejected` (retry de geração impossível: `max_retries: Literal[0]`, rejeita `GENERATOR_MAX_RETRIES!=0`); T7-04: `test_resilience.py::test_half_open_lets_only_one_probe_reach_endpoint`. Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: histórico append-only por `IndexRun` (`test_force_reindexes_preserves_passage_history`, `test_different_chunking_params_same_edition_creates_new_run_without_force`), fingerprint integral (`test_fingerprint.py`), backfill write-once/idempotente e concorrente (`test_fingerprint_backfill_is_write_once_and_idempotent`, `test_fingerprint_backfill_never_overwrites_divergent_identity`, `test_concurrent_fingerprint_backfills_converge_idempotently`) e derivado OCR correto (`test_fingerprint_backfill_uses_registered_ocr_derivative`); `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve versão existente) |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: histórico append-only por `IndexRun` (`test_force_reindexes_preserves_passage_history`, `test_different_chunking_params_same_edition_creates_new_run_without_force`), fingerprint integral (`test_fingerprint.py`), backfill write-once/idempotente e concorrente (`test_fingerprint_backfill_is_write_once_and_idempotent`, `test_fingerprint_backfill_never_overwrites_divergent_identity`, `test_concurrent_fingerprint_backfills_converge_idempotently`) e derivado OCR correto (`test_fingerprint_backfill_uses_registered_ocr_derivative`); `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve versão existente); T08 (T8-01): `test_lexical_search.py::test_search_only_returns_passages_of_active_index_run` (a recuperação usa só a execução ATIVA enquanto o histórico fica reproduzível no banco) e `::test_legacy_rows_stay_eligible_until_edition_has_active_run` (política de compatibilidade legada, sem reintroduzir conjunto inativo). Falta: `AnswerRun` completo (T18) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T7-02: `test_http_with_api_key_is_rejected`/`test_http_with_api_key_file_is_rejected` (generator/reranker recusam credencial Bearer sobre `http://`) e `test_https_with_api_key_is_accepted`; T7-05: `test_error_message_does_not_leak_secret_file_path` + `hide_input_in_errors` (erros de configuração não ecoam o caminho do secret file nem a URL). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
@@ -791,6 +791,51 @@ T19 (NOTES.md §4); `required_terms`/`excluded_terms` só aceitam uma palavra
 alfanumérica cada (sem hífen, apóstrofo ou acento de pontuação composta) —
 suficiente para o vocabulário exercitado nesta tarefa, mas uma limitação a
 revisitar se o planejador (T10) precisar repassar termos com esses caracteres.
+
+### T08 — Correções da revisão (`docs/rag/REVIEW_T08.md`, T8-01 a T8-03)
+
+Resposta detalhada em `docs/rag/REVIEW_RESPONSE_T08.md`. Nenhuma dependência
+nova; nenhuma migration nova. Correções:
+
+- **T8-01 (bloqueador)** — `LexicalSearchRepository.search()` passou a
+  selecionar explicitamente o conjunto corrente: o `WHERE` agora exige que a
+  passagem pertença à execução de indexação ATIVA (`EXISTS` sobre
+  `index_runs.is_active`), aplicado antes de frase/FTS/trigram e dos filtros
+  de obra/edição. Política de compatibilidade para linhas legadas
+  (`index_run_id IS NULL`): elegíveis apenas enquanto a edição não tem
+  execução ativa; uma vez indexada, saem do conjunto corrente — nunca
+  reintroduzem um conjunto inativo (NOTES.md §10.9 item 8). Evidências
+  (integração, PostgreSQL real): `test_search_only_returns_passages_of_active_index_run`
+  (indexar a mesma edição e forçar uma segunda execução: a passagem da
+  execução inativada nunca retorna, a da ativa permanece recuperável, e o
+  histórico fica no banco com uma única execução ativa);
+  `test_legacy_rows_stay_eligible_until_edition_has_active_run` (linhas NULL
+  elegíveis sem execução ativa e excluídas quando a edição ganha uma).
+- **T8-02 (correção importante)** — cobertura das duas polaridades por
+  dimensão: adicionados `test_filter_include_edition` e
+  `test_filter_exclude_work`, combinando a busca com candidatos elegíveis em
+  ambas as obras/edições para provar que o predicado é aplicado no SQL
+  (não que uma busca sem resultado devolve lista vazia).
+- **T8-03 (correção importante)** — `limit` validado na fronteira do
+  repository: `1 <= limit <= MAX_SEARCH_LIMIT` (constante `MAX_SEARCH_LIMIT`,
+  default 100; default do parâmetro segue 20), com `ValueError` fora da
+  faixa — `LIMIT -1`/`LIMIT 0` no PostgreSQL não truncam como esperado e
+  recuperariam o acervo inteiro, violando o orçamento controlado por T09
+  (NOTES.md §10.9 item 9). Evidências: `test_limit_is_respected`
+  (limite é um teto real), `test_invalid_limit_is_rejected` (parametrizado
+  sobre 0, -1 e `MAX_SEARCH_LIMIT + 1`).
+
+Comandos reexecutados em 2026-08-30 após as correções T8-01/T8-02/T8-03:
+
+| Comando | Resultado |
+|---------|-----------|
+| `cd backend && uv run pytest tests/integration/test_lexical_search.py -q` (Docker/Podman conforme ambiente) | OK — 22 passed |
+| `cd backend && uv run pytest tests/unit tests/contract -q` | OK — 378 passed, 3 skipped |
+| `cd backend && uv run pytest tests/integration -q` (Docker/Podman) | OK — 138 passed, 1 skipped |
+| `make lint` | OK (ruff + eslint) |
+| `make format-check` | OK (ruff format + prettier) |
+| `make typecheck` | OK (mypy strict 86 arquivos; tsc) |
+| `git diff --check` | OK |
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

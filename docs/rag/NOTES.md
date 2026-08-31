@@ -700,3 +700,36 @@ português), não bloqueantes; podem ser revistas pelo usuário.
    (integração) contorna deliberadamente os validators de domínio
    (`LexicalQuery.model_construct`) para provar essa propriedade no nível
    do repository, não só por rejeição antecipada da validação.
+
+8. **A busca lexical seleciona a execução de indexação ATIVA (T8-01).**
+   Sem isso, a integração de T06 deixava o histórico de reindexações
+   reproduzível mas também elegível para a recuperação — o que podia
+   devolver texto, ranking e IDs de evidência obsoletos ao fluxo corrente
+   (AC-15, "conjunto corrente"). `LexicalSearchRepository.search()` agora
+   restringe o `WHERE` com
+   `EXISTS (SELECT 1 FROM index_runs ir WHERE ir.id = p.index_run_id AND ir.is_active)`,
+   aplicado ANTES de frase/FTS/trigram e dos filtros de obra/edição. Política
+   de compatibilidade para linhas legadas (`passages.index_run_id IS NULL` —
+   fixtures de teste, acervo anterior a `rag index`): elas permanecem
+   elegíveis APENAS enquanto a edição não possui execução ativa; assim que a
+   edição é indexada, deixam de ser candidatas junto com as execuções
+   antigas. Essa política nunca reintroduz um conjunto inativo, e é
+   explicitamente testada em
+   `test_lexical_search.py::test_legacy_rows_stay_eligible_until_edition_has_active_run`
+   (linhas NULL permanecem elegíveis sem execução ativa e saem quando a
+   edição ganha uma) e
+   `::test_search_only_returns_passages_of_active_index_run` (duas execuções
+   da mesma edição; a inativa nunca é candidata; o histórico permanece no
+   banco).
+
+9. **`limit` é validado na fronteira do repository (T8-03).** O orçamento de
+   candidatos que T09 controla não pode ser burlado por um valor que o
+   PostgreSQL interprete silenciosamente: `LIMIT -1` = ausência de limite e
+   `LIMIT 0` não é erro. `search()` valida `1 <= limit <= MAX_SEARCH_LIMIT`
+   (constante de módulo, default 100; default do parâmetro segue 20) e
+   levanta `ValueError` fora da faixa, antes de qualquer SQL. O teto fixo é
+   o "ponto que deve ser calibrado" de NOTES.md §4 (quantidade de candidatos
+   lexical) — se o benchmark de T19 indicar outro valor, basta ajustar a
+   constante e a revisão acompanha (nenhuma migration/schema mudou). Testes:
+   `::test_limit_is_respected` e `::test_invalid_limit_is_rejected`
+   (parametrizado sobre 0, -1 e `MAX_SEARCH_LIMIT + 1`).
