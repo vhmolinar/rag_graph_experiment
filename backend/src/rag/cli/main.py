@@ -342,6 +342,24 @@ def create_app(
             raise typer.Exit(code=2) from exc
         raise typer.Exit(code=code)
 
+    @app.command()
+    def serve(
+        host: Annotated[str, typer.Option("--host", help="endereço de escuta")] = "127.0.0.1",
+        port: Annotated[int, typer.Option("--port", help="porta")] = 8000,
+        reload: Annotated[bool, typer.Option("--reload", help="recarga automática (dev)")] = False,
+    ) -> None:
+        """Inicia a API FastAPI (T14; uvicorn, `create_app` como fábrica)."""
+        import uvicorn
+
+        uvicorn.run(
+            "rag.api.app:create_app",
+            factory=True,
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info",
+        )
+
     return app
 
 

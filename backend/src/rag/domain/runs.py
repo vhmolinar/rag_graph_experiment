@@ -86,6 +86,7 @@ _ALLOWED_CHANGE_FIELDS: frozenset[str] = frozenset(
         "versions",
         "latencies",
         "error_code",
+        "error_message",
     }
 )
 _APPEND_ONLY_FIELDS: tuple[str, ...] = ("candidates", "latencies")
@@ -115,6 +116,11 @@ class AnswerRun(BaseModel):
     versions: VersionSet = Field(default_factory=VersionSet)
     latencies: tuple[StageLatency, ...] = Field(default_factory=tuple)
     error_code: ErrorCode | None = None
+    error_message: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Mensagem segura para o cliente do falha (T14); vazio/None em sucesso.",
+    )
     id: UUID = Field(default_factory=uuid4)
     created_at: AwareDatetime = Field(default_factory=utcnow)
     # R4-01: revisão persistida lida no carregamento; incrementada pelo

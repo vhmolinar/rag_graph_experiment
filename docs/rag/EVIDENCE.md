@@ -12,7 +12,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` (evidência citável carrega obra/edição/seção/página/offsets), `test_opening_origin_reproduces_text` (com edição, página física e offsets o trecho se reproduz exatamente); falta o caminho passagem→leitor (T17) |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` (evidência citável carrega obra/edição/seção/página/offsets), `test_opening_origin_reproduces_text` (com edição, página física e offsets o trecho se reproduz exatamente); T14: `test_api.py::test_source_range_requests` (o artefato de origem se serve com range requests — SPEC §10.2), `test_api.py::test_quote_flow_succeeds` (evidência citável via API); falta o caminho passagem→leitor (T17) |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
@@ -22,12 +22,12 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção); T13: `test_dissertative_pipeline.py::test_question_without_support_abstains` (abstenção do gerador sem chamar o verificador), `test_dissertative.py::TestGeneratorAbstention`/`TestUnsupportedClaims::test_low_coverage_forces_abstention` (abstenção forzada por cobertura < limiar) |
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada); T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` (seleção de evidências de AMBAS edições com limite flexível por edição; nunca preenche com obra menos relevante), `test_context.py::TestSelectEvidences::test_diversity_caps_per_edition_flexibly`/`test_diversity_never_pads_less_relevant_work` (capa por edição flexível e ausência de preenchimento, função pura); T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` + `test_dissertative.py::TestComparativeLimitation` (declaração determinística da limitação de fonte única na resposta) |
 | AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts` (seção/capítulo/edição com suportes), `test_summary_without_support_is_rejected` (SPEC §7.4), `test_summaries_never_serve_as_citations` (descendência devolve SÓ passagens; o texto da síntese nunca é passagem), `test_concept_leads_to_original_passages`, `test_enrichment.py::TestValidatedSupports` (suporte fora do escopo falha fechado); T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable` (o texto parental expande o contexto montado mas nunca é citação literal), `test_context.py` (expansão parental truncada e desativável) |
-| AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
-| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ✅ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado); T13: `test_verifier_adapter.py` (11 contract tests do provedor de verificação), `test_dissertative_pipeline.py::test_verifier_timeout_releases_no_unverified_answer` (timeout do verificador falha fechado — nenhuna resposta não verificada é liberada), `test_dissertative.py::TestVerifierFailure`, `test_invalid_citation_is_regenerated_with_feedback`/`test_invalid_id_persists_fails_closed` (citação fabricada nunca é liberada; sem fallback de conhecimento externo) |
+| AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); T14: `test_api.py::test_sessions_crud` (CRUD de sessões exposto — SPEC §10.3) e `test_query_with_unknown_session_returns_404` (validação de `session_id` no `POST /queries`); a reescrita de follow-up com contexto de sessão é T15 |
+| AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ✅ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado); T13: `test_verifier_adapter.py` (11 contract tests do provedor de verificação), `test_dissertative_pipeline.py::test_verifier_timeout_releases_no_unverified_answer` (timeout do verificador falha fechado — nenhuna resposta não verificada é liberada), `test_dissertative.py::TestVerifierFailure`, `test_invalid_citation_is_regenerated_with_feedback`/`test_invalid_id_persists_fails_closed` (citação fabricada nunca é liberada; sem fallback de conhecimento externo); T14: `test_api.py::test_internal_error_does_not_expose_details` (erro interno → 500 `INTERNAL_ERROR` sanitizado, sem segredo/traceback) e `test_api_app.py::test_error_response_never_leaks_internals` |
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history`, `test_reexecution_same_version_is_idempotent`; T12: `test_context_pipeline.py::test_context_policy_version_is_registered`, migration `0003_context_policy_versions`; T13: `test_dissertative_pipeline.py::test_versions_are_registered` (prompts de geração/verificação, endpoints `generator`/`verifier` e política de verificação registrados), `test_same_policy_is_idempotent_version`, migration `0004_verification_policy_versions`, `test_dissertative.py::TestVersions`. Falta: `AnswerRun` completo com todas as versões (T18) |
-| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção). Falta: API/traces (T18) |
+| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T14: `api/logging.py` (JSON, `request_id`, traceback redigido — só `error_type`; mesmo contrato do CLI), `test_api_app.py::test_error_response_never_leaks_internals`. Falta: traces OpenTelemetry (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
-| AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
+| AC-18 | API com validação, CORS restrito, rate limiting, headers | ✅ | T14: `test_api_app.py` (OpenAPI validada, 422 tipada, 404 com envelope, CORS restrito, headers de segurança e `X-Request-ID`); `test_api_security.py` (token bucket, 429 + `Retry-After`, health isento, `_parse_range`); `test_api_events.py` (SSE formatação e broker); `test_api_schemas.py` (mode derivado, envelope de erro); `test_api.py::test_sessions_crud`/`test_validation_and_unknown_work`/`test_rate_limit_returns_429_with_retry_after`/`test_cancel_interrupts_work`/`test_sse_stream_delivers_terminal_result`/`test_readiness_and_liveness` (integração real) |
 | AC-19 | Benchmark repetível, compara sem sobrescrever | ⬜ | T19 |
 | AC-20 | `docker compose up` funcional sem credenciais hardcoded | ⬜ | T20 |
 
@@ -1262,6 +1262,110 @@ remove/corrige de texto — transformação determinística sobre o contrato
 afirmações marcadas); a integração completa de `DissertativeAnswer`/versões em
 `AnswerRun` fica para T18; o adapter de verificação não está ainda conectado a
 um endpoint real de modelo em produção (T14 os integra).
+
+### T14 — API FastAPI e segurança ✅
+
+Dependências novas declaradas nesta tarefa (dentro do conjunto aprovado,
+NOTES.md §10.1 item 1, ainda não consumidas antes): `fastapi==0.141.1` e
+`uvicorn==0.52.4`. Interpretações registradas em NOTES.md §10.15 antes de
+implementar: execução de consulta em tarefa asyncio no processo com
+cancelamento cooperativo entre estágios; `mode` derivado do tipo da resposta
+(sem migration nova); sessões mínimas (contexto/reescrita é T15); rate
+limiting por token bucket próprio sem dependência nova; CORS restrito;
+SSE própria sobre `StreamingResponse` (sem `sse-starlette`); health em
+`/api/v1/health/live` e `/ready`; mapa `ErrorCode` → HTTP status com envelope
+`{"error": {code, message, request_id}}`; `rag serve` no CLI; I/O do
+`ArtifactStore` via `asyncio.to_thread` no `/source`.
+
+Entregáveis (`backend/src/rag/api/`):
+
+- **Fábrica** (`app.py`): `create_app()` com injeção de dependências
+  (defaults por ambiente; testes injetan doubles), lifespan (open/close do
+  pool, shutdown do registro de tarefas), prefixo `/api/v1`, OpenAPI em
+  `/api/v1/openapi.json`;
+- **Segurança** (`security.py`): `TokenBucket` (relógio inyectável),
+  `RateLimitMiddleware` (429 + `Retry-After`; health isento),
+  `SecurityHeadersMiddleware` (HSTS, CSP `default-src 'none'`, `nosniff`,
+  `DENY`, Referrer-Policy, Permissions-Policy) e `RequestIdMiddleware`
+  (`X-Request-ID`, `request_id` ligado ao structlog, envelope sanitizado
+  para falhas de middleware interno). Middlewares ASGI puros (sem
+  `BaseHTTPMiddleware`) para preservar SSE e a detecção de disconexão;
+- **Erros** (`errors.py`): envelope `ErrorOut`/`ErrorEnvelope`; mapa
+  `ErrorCode` → status (VALIDATION_ERROR→400, NOT_FOUND→404, CONFLICT→409,
+  RATE_LIMITED→429, MODEL_TIMEOUT→504, MODEL_UNAVAILABLE→503,
+  MODEL_INVALID_RESPONSE/EMBEDDING_DIMENSION/VERIFICATION_FAILED→502,
+  STORAGE/DATABASE/INTERNAL→500); handlers de `RagError`,
+  `RequestValidationError` (422 resumido com loc/msg, sem valores), `HTTPException`
+  e exceção genérica (500 `INTERNAL_ERROR` sanitizado);
+- **Eventos SSE** (`events.py`): `QueryEvent`/`format_sse`; `EventBroker` por
+  query (colas de subscriptores + último evento terminal) — um cliente
+  conectado depois do fim recebe o terminal e o stream encerra em
+  sucesso/erro/cancelamento;
+- **Executor** (`query_runner.py` + `tasks.py`): `QueryRegistry` (tarefas e
+  flags de cancelamento por query; shutdown cancela as tarefas ativas) e
+  `QueryExecutor` que orquesta planejamento → recuperação → contexto →
+  quote/dissertativo, persiste o `AnswerRun` em cada transição, publica
+  eventos SSE por estágio e verifica o cancel entre as etapas;
+- **Rotas** (`routes/`): consultas (`POST /queries` 202 + `query_id`,
+  `GET /queries/{id}`, `GET /queries/{id}/events` SSE, `POST
+  /queries/{id}/cancel`); acervo (`GET /works`, `/works/{id}`, `/editions/{id}`,
+  `/editions/{id}/passages/{passage_id}`, `/editions/{id}/source` com range
+  requests 200/206/416); sessões (`POST/GET/DELETE /sessions`);
+  health (`/health/live`, `/health/ready` — readiness consulta PostgreSQL);
+- **Sessões mínimas** (`domain/sessions.py` + `infrastructure/repositories/sessions.py`):
+  modelo `Session` e repository CRUD (a tabela já existia desde T03);
+- **`AnswerRun.error_message`** (migration `0005`, aditiva): persiste a
+  mensagem segura do falha para `GET /queries/{id}` de uma execução falhada
+  (SPEC §10.1);
+- **CLI** (`cli/main.py`): comando `rag serve [--host] [--port] [--reload]`
+  que inicia uvicorn com `rag.api.app:create_app` (fábrica);
+- **Logging** (`api/logging.py`): structlog JSON em stderr com
+  `merge_contextvars` (`request_id`) e traceback redigido (só `error_type`),
+  mesmo contrato do CLI (AC-16).
+
+Testes/evidências:
+
+- **Unit** — `test_api_security.py` (25): TokenBucket (capacidade/refill/
+  `Retry-After`), `RateLimitMiddleware` (429 + `Retry-After`, recuperação,
+  health isento), headers de segurança, `X-Request-ID`, `_parse_range`
+  (válidos/clampeado/416) e mapa `ErrorCode`→status; `test_api_events.py` (7):
+  formatação SSE e broker (terminal para subscriptor tardor, unsubscribe,
+  clear); `test_api_schemas.py` (8): `mode_of`/`build_query_state` e envelope;
+  `test_api_app.py` (7): OpenAPI validada, liveness com headers, 422 tipada,
+  404 com envelope, CORS restrito (origem configurada/sim rechazo), handler
+  genérico nunca vaza segredo/caminho/traceback;
+- **Integração** (`test_api.py`, contra PostgreSQL real via testcontainers;
+  requer Docker): fluxo quote e dissertativo via HTTP com doubles,
+  abstenção, erro interno sanitizado (500 `INTERNAL_ERROR` sem o marcador
+  `segredo=...`), rate limit 429 + `Retry-After`, cancelamento cooperativo
+  (provedor bloqueante + cancel → `cancelled`), sessões CRUD e `session_id`
+  inválida → 404, validação 422/404, range requests (200/206/416 + bytes
+  corretos), SSE (eventos de estágio + terminal `result`) e
+  readiness/liveness.
+
+Comandos executados em 2026-08-30 (Linux x86_64, Python 3.12, uv 0.12.7):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | All checks passed |
+| `uv run ruff format --check src tests` | 135 arquivos ok |
+| `uv run mypy src tests` | Success: no issues found in 135 source files (strict) |
+| `uv run pytest tests/unit -q` | 527 passed, 3 skipped (skips preexistentes de T05) |
+| `make lock` | OK (fastapi 0.141.1 + uvicorn 0.52.4 adicionados) |
+| `uv run pytest tests/integration/test_api.py` | **NÃO EXECUTADO neste ambiente** — requer Docker (testcontainers PostgreSQL); sem Docker, os testes de integração não podem rodar aqui. Comandos documentados para o ambiente do revisor: `DOCKER_HOST=...podman.sock TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/integration -q` |
+
+Critérios: AC-03 (range requests e passagem citável via API — contribui);
+AC-13 (sessões CRUD e validação de `session_id` expostos; reescrita de
+follow-up é T15); AC-14 (erro interno sanitizado e mapa de códigos no API);
+AC-18 (validação Pydantic, CORS restrito, rate limiting 429 + `Retry-After`,
+headers de segurança, `X-Request-ID`, SSE, readiness/liveness — coberto).
+
+Limitações conhecidas: execução de consulta é em processo (uma pessoa, fase 1
+— fila distribuída recusada); cancelamento é cooperativo entre estágios (uma
+chamada ao provedor em andamento não é interrompida, conforme NOTAS.md §10.2
+item 1); o provedor de planejamento (estratégia `expanded`) é opcional e
+exige `PLANNER_*`; a reescrita de follow-up e o histórico de sessão são T15;
+`AnswerRun` completo (todos os campos/versões) fica para T18.
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

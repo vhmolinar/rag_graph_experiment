@@ -6,6 +6,9 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic==1.19.1",
     "docling==2.123.1",
+    # T14: API FastAPI e servidor uvicorn (conjunto aprovado, NOTES.md §10.1).
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
     # T06: cliente HTTP do adapter de embeddings (compatível com OpenAI).
     "httpx==0.28.1",
     "pgvector==0.5.0",

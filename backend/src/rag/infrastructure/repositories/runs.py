@@ -46,13 +46,13 @@ class AnswerRunsRepository:
                                          explicit_filters, inferred_filters, plan,
                                          candidates, selected_evidence_ids, response,
                                          verification, versions, latencies, error_code,
-                                         created_at)
+                                         error_message, created_at)
                 VALUES (%(id)s, %(session_id)s, %(status)s, %(question_original)s,
                         %(question_anonymized)s, %(rewritten_query)s,
                         %(explicit_filters)s, %(inferred_filters)s, %(plan)s,
                         %(candidates)s, %(selected_evidence_ids)s, %(response)s,
                         %(verification)s, %(versions)s, %(latencies)s, %(error_code)s,
-                        %(created_at)s)
+                        %(error_message)s, %(created_at)s)
                 """,
                 {
                     "id": run.id,
@@ -75,6 +75,7 @@ class AnswerRunsRepository:
                     "versions": Jsonb(data["versions"]),
                     "latencies": Jsonb(data["latencies"]),
                     "error_code": run.error_code.value if run.error_code else None,
+                    "error_message": run.error_message,
                     "created_at": run.created_at,
                 },
             )
@@ -138,6 +139,7 @@ class AnswerRunsRepository:
                     versions = %(versions)s,
                     latencies = %(latencies)s,
                     error_code = %(error_code)s,
+                    error_message = %(error_message)s,
                     revision = revision + 1
                 WHERE id = %(id)s AND revision = %(expected_revision)s
                 RETURNING id
@@ -160,6 +162,7 @@ class AnswerRunsRepository:
                     "versions": Jsonb(data["versions"]),
                     "latencies": Jsonb(data["latencies"]),
                     "error_code": run.error_code.value if run.error_code else None,
+                    "error_message": run.error_message,
                     "expected_revision": run.revision,
                 },
             )
@@ -179,7 +182,7 @@ class AnswerRunsRepository:
                 "SELECT id, session_id, status, question_original, question_anonymized, "
                 "rewritten_query, explicit_filters, inferred_filters, plan, candidates, "
                 "selected_evidence_ids, response, verification, versions, latencies, "
-                "error_code, created_at, revision FROM answer_runs WHERE id = %s",
+                "error_code, error_message, created_at, revision FROM answer_runs WHERE id = %s",
                 (run_id,),
             )
             row = await cur.fetchone()

@@ -961,10 +961,83 @@ verificação), não bloqueantes; podem ser revistas pelo usuário.
    limiar após o limite) é caminho distinto (item 4). Ambas produzem abstenção
    (AC-10).
 9. **Versões registradas pelo serviço (`PromptVersion` + `ModelEndpointVersion`
-   + `VerificationPolicyVersion`).** Prompt de geração e de verificação são
-   templates hasheados (mesma convenção de T11); `ModelEndpointVersion` por
-   papel (`generator`/`verifier`, kind `generator`). As instruções de
-   profundidade continuam vivendo no adapter (conteúdo de prompt do adapter,
-   mesmo critério de T11 para o template). `DissertativeAnswer` devolve os
-   IDs das versões registradas; a integração completa em `AnswerRun` fica para
-   T18 (NOTES.md §10.13 item 7).
+    + `VerificationPolicyVersion`).** Prompt de geração e de verificação são
+    templates hasheados (mesma convenção de T11); `ModelEndpointVersion` por
+    papel (`generator`/`verifier`, kind `generator`). As instruções de
+    profundidade continuam vivendo no adapter (conteúdo de prompt do adapter,
+    mesmo critério de T11 para o template). `DissertativeAnswer` devolve os
+    IDs das versões registradas; a integração completa em `AnswerRun` fica para
+    T18 (NOTES.md §10.13 item 7).
+
+### 10.15 Registro do implementador — 2026-08-30 (fase 1, T14)
+
+Interpretações declaradas antes de implementar T14 (API FastAPI e segurança),
+não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Execução de consulta: tarefa asyncio em processo, cancelamento
+   cooperativo, SSE por cola em memória — conforme NOTES.md §10.2 item 1.**
+   `POST /queries` valida, cria o `AnswerRun` (`queued`) e agenda uma tarefa
+   asyncio; retorna 202 com `query_id`. O executor verifica o flag de
+   cancelamento (`asyncio.Event` por query) ENTRE os estágios (planejamento →
+   recuperação → montagem de contexto → geração/verificação). Uma fila
+   distribuída foi recusada na fase 1 (NOTES.md §8). A tarefa é encerrada
+   (cancelada) no shutdown da aplicação para não vazar execuções órfãns.
+2. **`mode` não é columna nova: é derivado do tipo da resposta no `GET
+   /queries`.** `AnswerRun.response` é `QuoteResponse` (modo quote) ou
+   `GeneratedAnswer` (dissertativo). A API expõe `mode` inferido desse tipo —
+   sem migration nova e sem alterar o schema de T03/T13. A integração completa
+   do `AnswerRun` (todos os campos/versões de T18) fica para T18.
+3. **Sessões mínimas em T14; contexto/reescrita de follow-up é T15.** As
+   tabelas `sessions`/`session_entries` já existem (migration 0001, T03).
+   `POST/GET/DELETE /sessions` são implementados com um `SessionsRepository`
+   mínimo e um modelo `Session` de domínio minimal; `QueryRequest.session_id`
+   é validado (404 se a sessão não existir) e persistido no `AnswerRun`
+   (columna já existente). A reescrita de follow-up para pergunta autônoma e
+   o histórico de sessão são T15 — AC-13 permanece ⬜ até T15, quando também
+   os `session_entries` serão alimentados.
+4. **Rate limiting: token bucket por IP, implementação própria sem dependência
+   nova (NOTES.md §10.2 item 6).** `RATE_LIMIT_PER_MINUTE` (padrão 60). O
+   bucket é por endereço IP do cliente; relógio monotónico inyectável para
+   testes. Resposta 429 com `Retry-After` e corpo `{"error": {code:
+   RATE_LIMITED, ...}}`. Endpoints de health (`/health/live`, `/health/ready`)
+   ficam isentos — liveness/readiness não podem ser estrangulados por limiar
+   (probes de orquestração).
+5. **CORS restrito à origem configurada, sem wildcard e sem credentials.**
+   `CORS_ALLOWED_ORIGINS` (lista separada por vírgula; padrão
+   `http://localhost:5173`). `allow_credentials=False` (sem cookies/autenticação
+   na fase 1). Métodos e headers explícitos.
+6. **SSE: implementação própria sobre `StreamingResponse`
+   (`text/event-stream`), sem `sse-starlette`** (não está no conjunto aprovado
+   de dependências). Um `EventBroker` por query (cola em memória + último
+   evento terminal) permite que o stream encerre corretamente em sucesso, erro
+   e cancelamento, e que um cliente conectado DEPOIS do fim receba o estado
+   terminal. Headers: `Cache-Control: no-cache`, `X-Accel-Buffering: no`.
+7. **Health endpoints em `/api/v1/health/live` e `/api/v1/health/ready`.**
+   Liveness responde 200 sem consultar dependências (nunca causa restart por
+   falha transitória externa — checklist §14). Readiness consulta PostgreSQL
+   (`SELECT 1` com timeout curto, via `asyncio.wait_for`) e responde 503 se o
+   banco estiver indisponível.
+8. **Erros: mapa `ErrorCode` → HTTP status; corpo sempre
+   `{"error": {code, message, request_id}}` (SPEC §10.1).** `RagError` tipado é
+   mapeado (VALIDATION_ERROR→400, NOT_FOUND→404, CONFLICT→409,
+   RATE_LIMITED→429, MODEL_TIMEOUT→504, MODEL_UNAVAILABLE→503,
+   MODEL_INVALID_RESPONSE→502, EMBEDDING_DIMENSION_MISMATCH→502,
+   VERIFICATION_FAILED→502, STORAGE_ERROR/DATABASE_ERROR/INTERNAL_ERROR→500,
+   CANCELLED→409). `RequestValidationError` (Pydantic) → 422 com o mesmo
+   envelope; exceções inesperadas → 500 `INTERNAL_ERROR` sanitizado. Nenhum
+   stack trace, SQL, caminho local ou credencial chega ao cliente; o detalhe
+   interno fica nos logs sanitizados com `request_id`.
+9. **`rag serve` no CLI** inicia uvicorn com `create_app()` da camada API;
+   configuração por ambiente (`POSTGRES_*`, `ARTIFACT_*`, `EMBEDDING_*`,
+   `RERANKER_*`, `GENERATOR_*`, `PLANNER_*`, `VERIFIER_*`, `CORS_ALLOWED_ORIGINS`,
+   `RATE_LIMIT_PER_MINUTE`). O provedor de planejamento (estratégia `expanded`)
+   é criado de `PLANNER_*` como os demais adapters — só é chamado na estratégia
+   `expanded`; se o endereço estiver inalcanzável, a falha é fechada (nunca
+   se responde sem o enriquecimento pedido). `PLANNER_BASE_URL` vazio → `None`
+   (o planejador determinístico continua funcionando sem expansão).
+10. **Artifact store I/O síncrono → `asyncio.to_thread` no endpoint `/source`.**
+    Confirmado na EVIDENCE.md T04 ("endpoints HTTP usarão asyncio.to_thread se
+    necessário (T14/T17)"). Range requests (SPEC §10.2) implementados por
+    `ArtifactStore.read_range`/`open_stream`: 206 com `Content-Range` para
+    ranges válidos, 416 para ranges inválidos, 200 com stream completo se não
+    houver header `Range`.
