@@ -20,6 +20,9 @@ class ApiSettings(BaseSettings):
 
     cors_allowed_origins: str = "http://localhost:5173"
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100_000)
+    # T15 (AC-13): tamanho do histórico da sessão usado na reescrita de
+    # follow-up — ponto de calibração (NOTAS.md §4).
+    session_history_limit: int = Field(default=20, ge=1, le=200)
 
     @property
     def cors_origins(self) -> list[str]:

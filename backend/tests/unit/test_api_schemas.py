@@ -85,6 +85,21 @@ def test_build_query_state_failed_carries_safe_error() -> None:
     assert state.result is None
 
 
+def test_build_query_state_exposes_rewritten_query() -> None:
+    """AC-13: a pergunta autônoma registrada é inspeccionável via a API."""
+    run = AnswerRun(
+        question_original="compare isso com o segundo autor",
+        question_anonymized="compare isso com o segundo autor",
+        rewritten_query="compare O Ensaio da Memória com Bruno Silva",
+        explicit_filters=EditionFilter(),
+        status=QueryStatus.SUCCEEDED,
+        response=_quote_response(),
+    )
+    state = build_query_state(run)
+    assert state.rewritten_query == "compare O Ensaio da Memória com Bruno Silva"
+    assert state.question == "compare isso com o segundo autor"
+
+
 def test_error_envelope_shape() -> None:
     envelope = ErrorEnvelope(
         error=ErrorOut(code="NOT_FOUND", message="Recurso não encontrado.", request_id="abc")

@@ -48,6 +48,7 @@ class QueryState(BaseModel):
     status: QueryStatus
     mode: AnswerMode | None = None
     question: str = Field(min_length=1)
+    rewritten_query: str | None = None
     intent: Intent | None = None
     strategy: SearchStrategy | None = None
     strategy_explanation: StrategyExplanation | None = None
@@ -149,6 +150,7 @@ def build_query_state(run: AnswerRun) -> QueryState:
         status=run.status,
         mode=mode_of(run.response),
         question=run.question_original,
+        rewritten_query=run.rewritten_query,
         intent=plan.intent if plan is not None else None,
         strategy=plan.strategy if plan is not None else None,
         strategy_explanation=plan.strategy_explanation if plan is not None else None,

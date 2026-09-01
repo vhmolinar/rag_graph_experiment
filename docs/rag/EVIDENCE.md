@@ -22,7 +22,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção); T13: `test_dissertative_pipeline.py::test_question_without_support_abstains` (abstenção do gerador sem chamar o verificador), `test_dissertative.py::TestGeneratorAbstention`/`TestUnsupportedClaims::test_low_coverage_forces_abstention` (abstenção forzada por cobertura < limiar) |
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada); T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` (seleção de evidências de AMBAS edições com limite flexível por edição; nunca preenche com obra menos relevante), `test_context.py::TestSelectEvidences::test_diversity_caps_per_edition_flexibly`/`test_diversity_never_pads_less_relevant_work` (capa por edição flexível e ausência de preenchimento, função pura); T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` + `test_dissertative.py::TestComparativeLimitation` (declaração determinística da limitação de fonte única na resposta) |
 | AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts` (seção/capítulo/edição com suportes), `test_summary_without_support_is_rejected` (SPEC §7.4), `test_summaries_never_serve_as_citations` (descendência devolve SÓ passagens; o texto da síntese nunca é passagem), `test_concept_leads_to_original_passages`, `test_enrichment.py::TestValidatedSupports` (suporte fora do escopo falha fechado); T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable` (o texto parental expande o contexto montado mas nunca é citação literal), `test_context.py` (expansão parental truncada e desativável) |
-| AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); T14: `test_api.py::test_sessions_crud` (CRUD de sessões exposto — SPEC §10.3) e `test_query_with_unknown_session_returns_404` (validação de `session_id` no `POST /queries`); a reescrita de follow-up com contexto de sessão é T15 |
+| AC-13 | Contexto de sessão vira pergunta autônoma registrada | ✅ | T15: `test_sessions.py` (reescritor puro: ordinais/demonstrativos/pronomes, ausência de reescrita, referências inspeccionáveis — "compare isso com o segundo autor" → "compare O Ensaio da Memória com Bruno Silva"); `test_session_context.py` (integração real): `test_follow_up_is_rewritten_and_registered` (pergunta autônoma em `answer_runs.rewritten_query` e `session_entries.rewritten_query`), `test_context_of_other_session_is_never_used` (isolamento por `session_id`), `test_session_deletion_removes_history` (CASCADE), `test_history_limit_controls_rewrite_window` (`SESSION_HISTORY_LIMIT`), `test_question_without_anaphora_is_not_rewritten`; `test_api_schemas.py::test_build_query_state_exposes_rewritten_query` (inspeccionável via `GET /queries/{id}`); T14: `test_api.py::test_sessions_crud` e `test_query_with_unknown_session_returns_404` (CRUD e validação de sessões) |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ✅ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado); T13: `test_verifier_adapter.py` (11 contract tests do provedor de verificação), `test_dissertative_pipeline.py::test_verifier_timeout_releases_no_unverified_answer` (timeout do verificador falha fechado — nenhuna resposta não verificada é liberada), `test_dissertative.py::TestVerifierFailure`, `test_invalid_citation_is_regenerated_with_feedback`/`test_invalid_id_persists_fails_closed` (citação fabricada nunca é liberada; sem fallback de conhecimento externo); T14: `test_api.py::test_internal_error_does_not_expose_details` (erro interno → 500 `INTERNAL_ERROR` sanitizado, sem segredo/traceback) e `test_api_app.py::test_error_response_never_leaks_internals` |
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve uma `ChunkingVersion`/`EmbeddingVersion` existente); T11: `test_enrichment_pipeline.py::test_reexecution_with_new_version_preserves_history`, `test_reexecution_same_version_is_idempotent`; T12: `test_context_pipeline.py::test_context_policy_version_is_registered`, migration `0003_context_policy_versions`; T13: `test_dissertative_pipeline.py::test_versions_are_registered` (prompts de geração/verificação, endpoints `generator`/`verifier` e política de verificação registrados), `test_same_policy_is_idempotent_version`, migration `0004_verification_policy_versions`, `test_dissertative.py::TestVersions`. Falta: `AnswerRun` completo com todas as versões (T18) |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T14: `api/logging.py` (JSON, `request_id`, traceback redigido — só `error_type`; mesmo contrato do CLI), `test_api_app.py::test_error_response_never_leaks_internals`. Falta: traces OpenTelemetry (T18) |
@@ -1487,3 +1487,69 @@ Comandos finais executados em 2026-08-29 após as correções:
 | `make audit` | pip-audit: nenhuma vulnerabilidade; npm audit: 0 |
 | `make security-scan` | scanner estrutural: nenhum IOC bloqueado |
 | `make audit` ∥ `make test` (concorrente) | ambos OK |
+
+### T15 — Contexto de sessão ✅
+
+Dependências: T10 (planejador), T14 (API). Interpretações e decisões do usuário
+registradas em NOTES.md §10.16 (reescrita determinística no domínio; contexto =
+perguntas + respostas; histórico limitado como janela de reescrita;
+`rewritten_query` = pergunta autônoma; contexto de sessão no prompt do gerador;
+exclusão via CASCADE). Incidente de bugs pré-existentes de T14 corregidos com
+aprovação em NOTES.md §10.17.
+
+Entregáveis (`backend/src/rag/`):
+
+- **`domain/sessions.py`** — modelos `SessionEntry` (rodada persistida),
+  `SessionTurn` (rodada de contexto com projeção da resposta), `SessionCatalogEntry`,
+  `RewriteReference`/`RewriteResult`; função pura `rewrite_follow_up`
+  (ordinais, demonstrativos, pronomes; nunca adivina);
+- **`infrastructure/repositories/sessions.py`** — `list_entries(limit)` (janela
+  MAIS RECENTE em ordem cronológica) e `append_entry` (ordinal = próximo livre);
+- **`application/session_context.py`** — `SessionContextService.rewrite` /
+  `.record` / `.prompt_context` (pergunta autônoma + rodada registrada + contexto
+  de sessão para o gerador);
+- **`api/query_runner.py`** — na criação: reescrita do follow-up e registo da
+  rodada na MESMA transação da execução; planejador e geração usan a pergunta
+  autônoma; gerador recebe `session_context`; corregíons T14 (§10.17);
+- **`api/schemas.py`** — `QueryState.rewritten_query` (pergunta autônoma
+  inspeccionável, AC-13);
+- **`api/settings.py`** + `.env.example` — `SESSION_HISTORY_LIMIT` (padrão 20).
+
+Testes/evidências:
+
+- **Unit** — `test_sessions.py` (18): ordinais (segundo autor/obra, fora de
+  alcance, sem artigo), demonstrativos (essa obra, esse autor, isso), pronomes
+  (singular/plural), ausência de reescrita (sem histórico/catálogo/anáfora),
+  robustez (acentos, maiúsculas, resposta introduz referentes, inspección das
+  referências); `test_api_schemas.py` (+1): `QueryState.rewritten_query`.
+- **Integração** (`test_session_context.py`, contra PostgreSQL real via
+  testcontainers): `test_follow_up_is_rewritten_and_registered` ("compare isso
+  com o segundo autor" → "compare O Ensaio da Memória com Bruno Silva", rodadas
+  registradas com original + autônoma e `answer_run_id`); `test_context_of_other_session_is_never_used`
+  (isolamento por `session_id`); `test_session_deletion_removes_history`
+  (CASCADE; `answer_runs.session_id` → NULL); `test_history_limit_controls_rewrite_window`
+  (janela de 1 rodada: "o segundo autor" fora de alcance);
+  `test_question_without_anaphora_is_not_rewritten`; `test_query_without_session_has_no_history`.
+
+Comandos executados em 2026-08-31 (Linux x86_64, Python 3.12, uv 0.12.7;
+integração via podman: `TESTCONTAINERS_RYUK_DISABLED=true DOCKER_HOST=unix:///tmp/podman-docker.sock`):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | All checks passed |
+| `uv run ruff format --check src tests` | 138 arquivos ok |
+| `uv run mypy src tests` | Success: no issues found in 138 source files (strict) |
+| `uv run pytest tests/unit -q` | 546 passed, 3 skipped (skips preexistentes de T05) |
+| `uv run pytest tests/integration/test_session_context.py -q` | 6 passed (PostgreSQL real) |
+| `uv run pytest tests/integration -q` | 176 passed, 1 skipped, 7 falhas pre-existentes de `test_api.py` (não executado no T14; falhas por janela de polling 404 e provedor de planejamento padrão sem `PLANNER_BASE_URL` no ambiente) |
+
+Critérios: AC-13 (coberto — reescrita determinística, pergunta original e
+autônoma registradas e inspeccionáveis, histórico limitado, isolamento entre
+sessões, exclusão remove o histórico); contribui a AC-15 (`AnswerRun.rewritten_query`
+registrado; integração completa em T18).
+
+Limitações conhecidas: a reescrita é determinística e por substituição a nível
+de string (anáfora complexa/elíptica fica sem resolução — nunca se adivina);
+a calibração de `SESSION_HISTORY_LIMIT` e da janela de contexto do prompt fica
+para o benchmark de T19 (NOTAS.md §4); `question_anonymized` continua sendo
+placeholder (anonimização é T18).

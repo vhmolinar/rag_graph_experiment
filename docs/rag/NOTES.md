@@ -1036,8 +1036,85 @@ não bloqueantes; podem ser revistas pelo usuário.
    se responde sem o enriquecimento pedido). `PLANNER_BASE_URL` vazio → `None`
    (o planejador determinístico continua funcionando sem expansão).
 10. **Artifact store I/O síncrono → `asyncio.to_thread` no endpoint `/source`.**
-    Confirmado na EVIDENCE.md T04 ("endpoints HTTP usarão asyncio.to_thread se
-    necessário (T14/T17)"). Range requests (SPEC §10.2) implementados por
-    `ArtifactStore.read_range`/`open_stream`: 206 com `Content-Range` para
-    ranges válidos, 416 para ranges inválidos, 200 com stream completo se não
-    houver header `Range`.
+     Confirmado na EVIDENCE.md T04 ("endpoints HTTP usarão asyncio.to_thread se
+     necessário (T14/T17)"). Range requests (SPEC §10.2) implementados por
+     `ArtifactStore.read_range`/`open_stream`: 206 com `Content-Range` para
+     ranges válidos, 416 para ranges inválidos, 200 com stream completo se não
+     houver header `Range`.
+
+### 10.16 Registro do implementador — 2026-08-31 (fase 1, T15)
+
+Interpretações declaradas e decisões do usuário antes/duante de implementar T15
+(contexto de sessão, AC-13), não bloqueantes; podem ser revistas pelo usuário.
+
+1. **Reescrita determinística no domínio, sem provedor de modelo — decisão do
+   usuário (Opção A).** A reescrita de follow-up para pergunta autônoma é
+   função pura em `rag.domain.sessions` (`rewrite_follow_up`): referências
+   anafóricas (ordinal + substantivo "o segundo autor"; demonstrativo +
+   substantivo "essa obra"; demonstrativo puro "isso"/"isto"; pronomes
+   "ele"/"ela") são resolvidas contra o histórico da sessão e o catálogo de
+   obras/autores. Nunca adivina: uma referência não resolvida fica como estan
+   e a pergunta autônoma coincide com a pergunta original. Limitação
+   conhecida: a reescrita é por substituição a nível de string — a
+   concatenação pode produzir artículos/preposiciones redundantes ("da O
+   Ensaio da Memória"); a resolução é correta, a gramática não é refinada.
+2. **Contexto = perguntas + projeção truncada das respostas — decisão do
+   usuário.** `session_entries` só persiste perguntas; a projeção da resposta
+   (`answer_text`, truncada a `MAX_ANSWER_CONTEXT_CHARS`) é montada no
+   serviço a partir de `answer_run_id` → `AnswerRun.response` e serve para
+   localizar obras/autores mencionados nas respostas (ex.: "o autor de X é
+   Nome" introduz o autor no contexto). Nunca é o texto integral.
+3. **Histórico limitado = janela de rodadas USADAS na reescrita, não poda de
+   armazenamento.** `list_entries(limit=N)` devolve as N rodadas MAIS RECENTES
+   (ordinal DESC limit + reversa) em ordem cronológica; `SESSION_HISTORY_LIMIT`
+   (padrão 20, calibrable, NOTAS.md §4) configura essa janela. As rodadas
+   antigas permanecem no banco até a exclusão da sessão (efêmera).
+4. **`AnswerRun.rewritten_query` deixa de ser `plan.semantic_query` (T14) e
+   passa a ser a pergunta AUTÔNOMA (AC-13).** O planejador e a geração usan a
+   pergunta autônoma (`request.model_copy(update={"question": autonomous})` no
+   executor); `rewritten_query` fica `None` quando não há reescrita (a pergunta
+   original coincide com a autônoma). `session_entries.rewritten_query`
+   registra a mesma pergunta autônoma (ou `None`). A pergunta autônoma é
+   inspeccionável via `GET /queries/{id}` (`QueryState.rewritten_query`, campo
+   novo).
+5. **Contexto de sessão no prompt do gerador (SPEC §9.3).** Além da pergunta
+   autônoma, o modo dissertativo recebe `session_context` (projeção truncada
+   das rodadas mais recentes dentro de `MAX_SESSION_PROMPT_CONTEXT_CHARS`) —
+   bloco "pergunta e contexto da sessão" do SPEC §9.3. O modo `quote` não chama
+   o gerador (nenhum contexto de sessão necessário).
+6. **Exclusão da sessão remove o histórico (CASCADE).** A tabela `session_entries`
+   já tinha `ON DELETE CASCADE` desde T03; `DELETE /sessions/{id}` remove as
+   rodadas. `answer_runs.session_id` fica `NULL` (`ON DELETE SET NULL`) — a
+   execução permanece rastreável sem a sessão.
+
+### 10.17 Incidente: corregíons de bugs pré-existentes de T14 em `_retrieve`
+      (aprovadas pelo usuário em 2026-08-31)
+
+Durante a verificação de T15 (integração contra PostgreSQL real via podman),
+o pipeline de consulta de T14 foi exercitado pela primeira vez em ambientes
+reais (as testes de integração de T14 nunca rodaram no ambiente do T14 —
+EVIDENCE.md T14: "NÃO EXECUTADO neste ambiente — requer Docker"). Dous bugs
+latentes foram encontrados e **aprovados pelo usuário para corregir em T15**:
+
+1. **Latências append-only em `_retrieve`.** `AnswerRun.transition` exige que
+   os campos append-only (`candidates`, `latencies`) sejam passados
+   ACUMULADOS (`incoming[:len(current)] == current`, provado em
+   `test_runs.py::test_candidates_are_append_only`). `_retrieve` passava só a
+   latência de recuperação quando o run já carregava a latência de
+   planejamento → `InvalidTransitionError: Campo 'latencies' é append-only` em
+   TODA consulta que chega a recuperação. Corregido: `latencies=(*run.latencies,
+   StageLatency(retrieval))`. Impacto: o contrato de SPEC §13.2 (latências por
+   estágio) fica respeitado — todos os estágios persistem.
+2. **Run obsoleto propagado de `_retrieve`.** `_retrieve` persistia as
+   candidatas/latências (incrementando `revision` do CAS) mas devolvia só
+   `RetrievalResult`; o executor continuava com o `run` de `_plan` (revisão
+   anterior) → `ConcurrencyError: Execução modificada concorrentemente` no
+   `_quote`/`_dissertate` (CAS de `save`). Corregido: `_retrieve` devolve
+   `(run, retrieval)` e o executor usa a execução atualizada. Sem esse corregir,
+   nenhuna consulta quote/dissertativa podía concluir depois da recuperação.
+
+Ambas são corregir de comportamento de T14 (fora do escopo declarado de T15),
+mas bloqueaban a verificação da T15 (e toda consulta real). Registradas aqui
+como incidente, com evidência reproduzível (`git diff` + integração real).
+
+
