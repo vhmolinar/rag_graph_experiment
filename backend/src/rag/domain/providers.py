@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rag.domain.answer import EvidenceRef, GeneratedAnswer
 from rag.domain.enums import Depth
+from rag.domain.versions import EmbeddingVersion
 
 
 class GenerationRequest(BaseModel):
@@ -30,6 +31,9 @@ class GenerationRequest(BaseModel):
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
+    @property
+    def embedding_version(self) -> EmbeddingVersion: ...
+
     async def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
     async def embed_query(self, text: str) -> list[float]: ...
 

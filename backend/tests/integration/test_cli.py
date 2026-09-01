@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 from builders import make_epub
 
 from rag.cli.main import create_app
+from rag.domain.versions import EmbeddingVersion, utcnow
 from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
 pytestmark = pytest.mark.integration
@@ -24,6 +25,15 @@ pytestmark = pytest.mark.integration
 
 class _FakeEmbeddingProvider:
     """Determinístico, sem rede — usado para exercitar `rag index` sem T07."""
+
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="cli-fake-embedding",
+            model_name="cli-fake-embedding",
+            dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            created_at=utcnow(),
+        )
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[1.0] * EMBEDDING_COLUMN_DIMENSIONS for _ in texts]

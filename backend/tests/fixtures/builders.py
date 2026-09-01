@@ -190,7 +190,11 @@ def make_epub(chapters: list[tuple[str, list[str]]]) -> bytes:
     )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        mimetype_info = zipfile.ZipInfo("mimetype", (1980, 1, 1, 0, 0, 0))
+        mimetype_info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(mimetype_info, "application/epub+zip")
         for name, content in files.items():
-            zf.writestr(name, content)
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, content)
     return buf.getvalue()

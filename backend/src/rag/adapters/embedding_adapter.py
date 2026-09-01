@@ -26,6 +26,8 @@ from rag.domain.errors import (
     ModelUnavailableError,
     RateLimitError,
 )
+from rag.domain.versions import EmbeddingVersion, utcnow
+from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
 _DEFAULT_RETRY_AFTER_SECONDS = 60
 
@@ -192,3 +194,16 @@ class OpenAiCompatibleEmbeddingProvider:
     async def embed_query(self, text: str) -> list[float]:
         (embedding,) = await self._embed([text])
         return embedding
+
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label=self._settings.model,
+            model_name=self._settings.model,
+            dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            params={
+                "batch_size": self._settings.batch_size,
+                "model_revision": self._settings.model_revision,
+            },
+            created_at=utcnow(),
+        )

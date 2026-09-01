@@ -15,14 +15,15 @@ execução pode reproduzir os parâmetros de recuperação usados (AC-15).
 
 from psycopg import AsyncConnection
 
-from rag.domain.enums import Depth, RankingStage
+from rag.domain.enums import Depth, QueryStatus, RankingStage
 from rag.domain.errors import ModelResponseError, NotFoundError
 from rag.domain.providers import EmbeddingProvider, RerankerProvider
 from rag.domain.query import EditionFilter, LexicalQuery
 from rag.domain.retrieval import RetrievalPolicy, RetrievalResult, fuse_rankings
-from rag.domain.runs import RankedCandidate
-from rag.domain.versions import RetrievalPolicyVersion, utcnow
+from rag.domain.runs import AnswerRun, RankedCandidate
+from rag.domain.versions import EmbeddingVersion, RetrievalPolicyVersion, utcnow
 from rag.infrastructure.repositories.passages import PassagesRepository
+from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.search import LexicalSearchRepository
 from rag.infrastructure.repositories.vector import VectorSearchRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
@@ -43,36 +44,90 @@ class RetrievalService:
         *,
         lexical_query: LexicalQuery,
         semantic_query: str,
-        filters: EditionFilter | None,
-        policy: RetrievalPolicy,
-        depth: Depth,
+        run: AnswerRun,
+        filters: EditionFilter | None = None,
+        policy: RetrievalPolicy | None = None,
+        depth: Depth = Depth.STANDARD,
     ) -> RetrievalResult:
+        if not isinstance(run, AnswerRun):
+            raise TypeError(
+                f"run deve ser uma instância de AnswerRun, recebido {type(run).__name__}"
+            )
+        policy = policy if policy is not None else RetrievalPolicy.defaults()
         budget = policy.budget_for(depth)
         filters = filters if filters is not None else EditionFilter()
+
+        # R2-T9-01: a versão do embedding é obrigatória pelo contrato de EmbeddingProvider.
+        # Falha fechada antes de qualquer consulta ao banco se o provedor não
+        # expuser uma versão válida.
+        try:
+            emb_version = self._embedding.embedding_version
+        except AttributeError as err:
+            raise TypeError(
+                "embedding_provider deve implementar a propriedade 'embedding_version' "
+                f"(SPEC §8.5, AC-05, AC-15): {err}"
+            ) from err
+
+        if not isinstance(emb_version, EmbeddingVersion):
+            raise TypeError(
+                "embedding_provider.embedding_version deve ser EmbeddingVersion, "
+                f"recebido {type(emb_version).__name__}"
+            )
 
         # Estágios independentes (SPEC §8.5): cada lista é recuperada e
         # ranqueada em separado, sem que um condicione o outro.
         lexical = await LexicalSearchRepository(conn).search(
             lexical_query, filters=filters, limit=budget.lexical_top_k
         )
+
+        registered_emb_version = await VersionsRepository(conn).get_or_create(emb_version)
+
         query_vector = await self._embedding.embed_query(semantic_query)
         vector = await VectorSearchRepository(conn).search(
-            query_vector, filters=filters, limit=budget.vector_top_k
+            query_vector,
+            embedding_version_id=registered_emb_version.id,
+            filters=filters,
+            limit=budget.vector_top_k,
         )
 
-        fused = fuse_rankings([lexical, vector], k=budget.rrf_k)[: budget.rerank_top_n]
+        # T9-04: manter a lista RRF completa em `fused` para rastreabilidade integral
+        # de todos os candidatos; derivar `rerank_candidates` separadamente para o reranker.
+        fused = fuse_rankings([lexical, vector], k=budget.rrf_k)
+        rerank_candidates = fused[: budget.rerank_top_n]
 
-        texts = await self._passage_texts(conn, fused)
-        reranked = await self._reranked(fused, semantic_query, texts)
+        texts = await self._passage_texts(conn, rerank_candidates)
+        reranked = await self._reranked(rerank_candidates, semantic_query, texts)
 
         policy_version = await self._register_policy(conn, policy)
-        return RetrievalResult(
+        result = RetrievalResult(
             lexical=tuple(lexical),
             vector=tuple(vector),
             fused=fused,
             reranked=reranked,
             policy_version_id=policy_version.id,
+            embedding_version_id=registered_emb_version.id,
+            run_id=run.id,
         )
+
+        # R2-T9-02 (AC-06, AC-15): persistência obrigatória dos rankings e versões no AnswerRun
+        version_updates: dict[str, object] = {
+            "retrieval_policy_version_id": policy_version.id,
+            "embedding_version_id": registered_emb_version.id,
+        }
+        new_versions = run.versions.model_copy(update=version_updates)
+        target_status = (
+            QueryStatus.RUNNING
+            if run.status in (QueryStatus.QUEUED, QueryStatus.RUNNING)
+            else run.status
+        )
+        updated_run = run.transition(
+            target_status,
+            candidates=(*run.candidates, *result.answer_run_candidates()),
+            versions=new_versions,
+        )
+        await AnswerRunsRepository(conn).save(updated_run)
+
+        return result
 
     @staticmethod
     async def _passage_texts(

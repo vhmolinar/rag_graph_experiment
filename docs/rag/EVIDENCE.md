@@ -1068,3 +1068,64 @@ Comandos finais executados em 2026-08-29 após as correções:
 | `make audit` | pip-audit: nenhuma vulnerabilidade; npm audit: 0 |
 | `make security-scan` | scanner estrutural: nenhum IOC bloqueado |
 | `make audit` ∥ `make test` (concorrente) | ambos OK |
+
+## Rodada de revisão T09 (2026-08-31)
+
+Revisão independente em `docs/rag/review_rounds/REVIEW_T09.md`; resposta item a item em
+`docs/rag/review_rounds/REVIEW_RESPONSE_T09.md`. Correções T9-01–T9-05 aplicadas:
+
+- **T9-01 (Alto)** — `VectorSearchRepository.search()` passou a selecionar apenas
+  passagens de execuções de indexação ativas (`EXISTS (SELECT 1 FROM index_runs ir WHERE ir.id = p.index_run_id AND ir.is_active)`),
+  mantendo linhas legadas (`index_run_id IS NULL`) elegíveis apenas na ausência de execução ativa na edição.
+  Evidências em `test_vector_search.py` e `test_retrieval_pipeline.py`.
+- **T9-02 (Alto)** — `VectorSearchRepository.search()` agora filtra por `embedding_version_id`,
+  prevenindo cálculo espúrio de distâncias entre modelos de embedding incompatíveis de mesma dimensão.
+  `RetrievalService` registra e repassa a versão canônica obtida do provider. Evidências em
+  `test_vector_search.py` e `test_retrieval_pipeline.py`.
+- **T9-03 (Alto)** — `RetrievalService.retrieve(..., run=run)` agora executa a transição de estado de `AnswerRun`
+  para `RUNNING`, vincula `retrieval_policy_version_id` e `embedding_version_id`, anexa os `RankedCandidate` de todos os
+  4 estágios (`LEXICAL`, `VECTOR`, `FUSED`, `RERANKED`) e persiste no banco via `AnswerRunsRepository.save()`.
+  Evidência em `test_retrieval_pipeline.py::test_retrieval_persists_rankings_into_answer_run_and_reloads_from_db`.
+- **T9-04 (Médio)** — `RetrievalResult.fused` preserva a lista completa de candidatos retornada por `fuse_rankings()`,
+  aplicando o fatiamento `budget.rerank_top_n` estritamente na chamada ao reranker. Evidências em `test_retrieval.py`
+  e `test_retrieval_pipeline.py`.
+- **T9-05 (Médio)** — `VectorSearchRepository.search()` valida estritamente o tipo e faixa de `limit` (`1 <= limit <= 100`,
+  rejeitando booleanos, floats, strings, negativos e zero). Evidência em `test_vector_search.py`.
+
+Comandos finais executados em 2026-08-31:
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src/ tests/` | OK — 0 erros |
+| `uv run ruff format --check src/ tests/` | OK — 92 arquivos |
+| `uv run mypy src/ tests/` | OK — 92 arquivos strict |
+| `uv run pytest -q tests/unit/` | OK — 371 passed, 3 skipped |
+| `uv run pytest -q tests/contract/` | OK — 26 passed |
+| `uv run pytest -v tests/integration/test_vector_search.py tests/integration/test_retrieval_pipeline.py` | OK — 30 passed |
+| `uv run pytest -q tests/integration/` | OK — 148 passed, 1 skipped |
+
+## Rodada de revisão T09 — Rodada 2 (2026-08-31)
+
+Revisão independente em `docs/rag/review_rounds/REVIEW_T09_ROUND2.md`; resposta item a item em
+`docs/rag/review_rounds/REVIEW_RESPONSE_T09_ROUND2.md`. Correções R2-T9-01 e R2-T9-02 aplicadas:
+
+- **R2-T9-01 (Alto)** — `EmbeddingProvider` Protocol agora exige formalmente `@property def embedding_version(self) -> EmbeddingVersion: ...`.
+  `RetrievalService.retrieve()` valida a propriedade antes de qualquer operação, falhando fechado com `TypeError` caso ausente ou inválida.
+  `VectorSearchRepository.search()` exige `embedding_version_id: UUID` de forma mandatória e aplica o filtro incondicionalmente no SQL.
+  Evidências em `test_providers.py`, `test_retrieval.py`, `test_vector_search.py` e `test_retrieval_pipeline.py`.
+- **R2-T9-02 (Alto)** — `RetrievalService.retrieve(conn, *, ..., run: AnswerRun)` tornou `run` obrigatório e estritamente tipado.
+  Toda chamada agora realiza a transição de estado, anexa todos os rankings dos 4 estágios (`LEXICAL`, `VECTOR`, `FUSED`, `RERANKED`) e
+  persiste no banco via `AnswerRunsRepository(conn).save(updated_run)`.
+  Evidências em `test_retrieval.py` e `test_retrieval_pipeline.py`.
+
+Comandos finais executados em 2026-08-31 (Rodada 2):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src/ tests/` | OK — 0 erros |
+| `uv run ruff format --check src/ tests/` | OK — 92 arquivos formatados |
+| `uv run mypy src/ tests/` | OK — 92 arquivos (0 erros) |
+| `uv run pytest -q tests/unit/ tests/contract/` | OK — 400 passed, 3 skipped |
+| `uv run pytest -v tests/integration/test_vector_search.py tests/integration/test_retrieval_pipeline.py` | OK — 33 passed |
+| `uv run pytest -q tests/integration/` | OK — 175 passed, 1 skipped |
+
