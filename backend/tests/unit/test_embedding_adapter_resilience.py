@@ -40,7 +40,7 @@ class TestRetry:
         route.side_effect = [
             httpx.Response(503),
             httpx.Response(503),
-            httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]}),
+            httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2], "index": 0}]}),
         ]
         provider = OpenAiCompatibleEmbeddingProvider(_settings(max_retries=2), sleep=_noop_sleep)
         try:
@@ -111,7 +111,7 @@ class TestConcurrencyLimit:
             in_flight["max"] = max(in_flight["max"], in_flight["count"])
             await asyncio.sleep(0.01)
             in_flight["count"] -= 1
-            return httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+            return httpx.Response(200, json={"data": [{"embedding": [0.1], "index": 0}]})
 
         respx.post(f"{_BASE_URL}/embeddings").mock(side_effect=handler)
         provider = OpenAiCompatibleEmbeddingProvider(
@@ -133,10 +133,10 @@ class TestSecretFileAuth:
     async def test_uses_api_key_loaded_from_secret_file(self, tmp_path: Path) -> None:
         secret_file = tmp_path / "embedding_api_key"
         secret_file.write_text("chave-do-arquivo", encoding="utf-8")
-        route = respx.post(f"{_BASE_URL}/embeddings").mock(
-            return_value=httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+        route = respx.post("https://embeddings.test/v1/embeddings").mock(
+            return_value=httpx.Response(200, json={"data": [{"embedding": [0.1], "index": 0}]})
         )
-        settings = _settings(api_key_file=secret_file)
+        settings = _settings(base_url="https://embeddings.test/v1", api_key_file=secret_file)
         provider = OpenAiCompatibleEmbeddingProvider(settings, sleep=_noop_sleep)
         try:
             await provider.embed_query("texto")

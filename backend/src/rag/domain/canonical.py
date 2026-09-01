@@ -10,6 +10,8 @@ quando disponíveis, offsets para destaque, texto normalizado e original, e
 warnings de extração.
 """
 
+import hashlib
+import json
 from enum import StrEnum
 from typing import Self
 
@@ -96,6 +98,12 @@ class CanonicalDocument(BaseModel):
         if self.source_type is SourceType.PDF_SCAN:
             raise ValueError("pdf_scan exige OCR prévio (rag ocr); não é extraível diretamente")
         return self
+
+    def fingerprint(self) -> str:
+        """Identidade determinística de toda a representação consumida pelo T06."""
+        payload = self.model_dump(mode="json")
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @model_validator(mode="after")
     def _ordinals_sequential(self) -> Self:

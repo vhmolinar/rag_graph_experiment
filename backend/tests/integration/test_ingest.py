@@ -6,6 +6,7 @@ os testes determinísticos; o pipeline padrão com modelo é coberto pelo e2e
 opcional em test_docling_adapter.py.
 """
 
+import asyncio
 import io
 import os
 import sys
@@ -160,6 +161,84 @@ class TestIngestEpub:
             assert row is not None
             assert row[0] == 1
 
+    async def test_fingerprint_backfill_is_write_once_and_idempotent(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        report = await _ingest_epub(db, tmp_path)
+        assert report.edition_id is not None
+        service = _service(tmp_path)
+        async with db.connection() as conn:
+            edition = await EditionsRepository(conn).get_by_source_hash(report.source_sha256)
+            assert edition is not None
+            expected = edition.canonical_fingerprint
+            assert expected is not None
+            await conn.execute(
+                "UPDATE editions SET canonical_fingerprint = NULL WHERE id = %s",
+                (edition.id,),
+            )
+
+        async with db.connection() as conn:
+            first = await service.backfill_fingerprint(conn, edition_id=edition.id)
+        async with db.connection() as conn:
+            second = await service.backfill_fingerprint(conn, edition_id=edition.id)
+            persisted = await EditionsRepository(conn).get(edition.id)
+
+        assert first == expected
+        assert second == expected
+        assert persisted is not None
+        assert persisted.canonical_fingerprint == expected
+
+    async def test_fingerprint_backfill_never_overwrites_divergent_identity(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        report = await _ingest_epub(db, tmp_path)
+        assert report.edition_id is not None
+        divergent = "f" * 64
+        async with db.connection() as conn:
+            edition = await EditionsRepository(conn).get_by_source_hash(report.source_sha256)
+            assert edition is not None
+            assert edition.canonical_fingerprint != divergent
+            await conn.execute(
+                "UPDATE editions SET canonical_fingerprint = %s WHERE id = %s",
+                (divergent, edition.id),
+            )
+
+        service = _service(tmp_path)
+        async with db.connection() as conn:
+            with pytest.raises(ConflictError, match="não sobrescreve"):
+                await service.backfill_fingerprint(conn, edition_id=edition.id)
+        async with db.connection() as conn:
+            persisted = await EditionsRepository(conn).get(edition.id)
+        assert persisted is not None
+        assert persisted.canonical_fingerprint == divergent
+
+    async def test_concurrent_fingerprint_backfills_converge_idempotently(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        report = await _ingest_epub(db, tmp_path)
+        async with db.connection() as conn:
+            edition = await EditionsRepository(conn).get_by_source_hash(report.source_sha256)
+            assert edition is not None
+            expected = edition.canonical_fingerprint
+            assert expected is not None
+            await conn.execute(
+                "UPDATE editions SET canonical_fingerprint = NULL WHERE id = %s",
+                (edition.id,),
+            )
+
+        async def run_backfill() -> str:
+            service = _service(tmp_path)
+            async with db.connection() as conn:
+                return await service.backfill_fingerprint(conn, edition_id=edition.id)
+
+        first, second = await asyncio.gather(run_backfill(), run_backfill())
+        assert first == expected
+        assert second == expected
+        async with db.connection() as conn:
+            persisted = await EditionsRepository(conn).get(edition.id)
+        assert persisted is not None
+        assert persisted.canonical_fingerprint == expected
+
     async def test_divergent_metadata_same_file_conflicts(
         self, db: Database, tmp_path: Path
     ) -> None:
@@ -302,6 +381,41 @@ class TestPdfScan:
             pages = await PagesRepository(conn).list_by_edition(edition.id)
             assert len(pages) == 1  # texto veio do derivado OCR
             assert "OCR" in pages[0].text
+
+    async def test_fingerprint_backfill_uses_registered_ocr_derivative(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        scan = tmp_path / "scan.pdf"
+        scan.write_bytes(make_scanned_pdf(1))
+        ocr = tmp_path / "scan_ocr.pdf"
+        ocr_pdf(_StubOcrEngine("Texto exclusivo do derivado OCR."), scan, ocr)
+        meta = load_metadata(
+            _write_metadata(
+                tmp_path / "scan.yaml",
+                extra="source_type: pdf_scan\nocr_artifact: " + str(ocr) + "\n",
+            )
+        )
+        service = _service(tmp_path, converter=_extractor_pdf_no_model())
+        async with db.connection() as conn:
+            report = await service.ingest(conn, file_path=scan, metadata=meta)
+        assert report.edition_id is not None
+
+        async with db.connection() as conn:
+            edition = await EditionsRepository(conn).get_by_source_hash(report.source_sha256)
+            assert edition is not None
+            expected = edition.canonical_fingerprint
+            assert expected is not None
+            await conn.execute(
+                "UPDATE editions SET canonical_fingerprint = NULL WHERE id = %s",
+                (edition.id,),
+            )
+
+        async with db.connection() as conn:
+            restored = await service.backfill_fingerprint(conn, edition_id=edition.id)
+            persisted = await EditionsRepository(conn).get(edition.id)
+        assert restored == expected
+        assert persisted is not None
+        assert persisted.canonical_fingerprint == expected
 
     async def test_ocr_artifact_without_provenance_rejected(
         self, db: Database, tmp_path: Path

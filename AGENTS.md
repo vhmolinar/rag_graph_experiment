@@ -1,39 +1,42 @@
-# Orientações para o agente implementador
+# Contexto geral para agentes
 
-## Papel
+## Projeto e fontes de verdade
 
-Você implementará a fase 1 do RAG de livros. Outro agente escreveu a especificação e fará uma revisão independente ao final. Não altere requisitos para facilitar a implementação nem declare trabalho concluído sem evidências reproduzíveis.
+Este repositório implementa a fase 1 de um RAG privado/local para livros em
+português. Todo agente — de implementação, revisão, diagnóstico, documentação
+ou operação — deve preservar os requisitos aprovados e basear conclusões em
+evidências reproduzíveis. Não altere requisitos, critérios de aceitação ou o
+checklist de revisão para aparentar conformidade.
 
-## Fontes obrigatórias
-
-Leia estes documentos integralmente antes de escrever código:
+Antes de modificar código, infraestrutura, testes ou documentação normativa,
+leia integralmente estes documentos:
 
 1. `docs/rag/SPECIFICATION.md` — requisitos e critérios `AC-01` a `AC-20`;
 2. `docs/rag/NOTES.md` — decisões, premissas, recusas e itens adiados;
 3. `docs/rag/TASKS.md` — ordem, dependências e definição de pronto;
 4. `docs/rag/REVIEW_CHECKLIST.md` — como o resultado será julgado.
 
-Em caso de conflito, a especificação prevalece. Se ainda houver ambiguidade material, pare e pergunte ao usuário. Não escolha silenciosamente.
+Em conflito, a especificação prevalece. Se persistir uma ambiguidade material,
+pare e peça orientação ao usuário; não escolha silenciosamente.
 
 ## Escopo
 
-- Implemente somente a fase 1.
+- Trabalhe somente no escopo da fase 1 aprovado.
 - Não implemente plataforma colaborativa, autenticação própria, multi-tenancy, RAG multimodal, banco de grafos, Kubernetes ou memória persistente.
 - Mantenha o ambiente privado/local.
 - Não exponha o sistema publicamente.
 - Não substitua PostgreSQL + pgvector sem evidência, proposta e aprovação.
 - Não use LangChain como núcleo. Tipos de framework ou SDK não podem atravessar o domínio.
 
-## Método de trabalho
+## Forma de trabalho
 
-1. Execute as tarefas `T01` a `T20` respeitando dependências.
-2. Antes de cada tarefa, identifique requisitos e critérios `AC-*` relacionados.
-3. Implemente o menor incremento vertical verificável.
-4. Adicione testes positivos, negativos e de falha no mesmo incremento.
-5. Execute lint, formatação, type checking e testes relevantes.
-6. Registre comandos, resultados e limitações.
-7. Atualize uma matriz `AC-01` a `AC-20` com links para testes e evidências.
-8. Só marque uma tarefa concluída quando sua definição de pronto estiver satisfeita.
+1. Localize a tarefa e as dependências relevantes em `TASKS.md` antes de propor ou executar alterações.
+2. Identifique os requisitos e critérios `AC-*` afetados.
+3. Faça o menor incremento verificável compatível com o pedido.
+4. Ao implementar, inclua testes positivos, negativos e de falha no mesmo incremento.
+5. Execute lint, formatação, type checking e os testes pertinentes; registre comandos, resultados e limitações reais.
+6. Atualize a matriz de evidências `AC-01` a `AC-20` quando a alteração afetar cobertura ou evidências.
+7. Só declare uma tarefa concluída se a respectiva definição de pronto estiver satisfeita.
 
 Não crie commits, faça push ou abra PR sem solicitação explícita do usuário.
 
@@ -91,9 +94,9 @@ Não edite critérios de aceitação ou o checklist de revisão para fazer o có
 - Não coloque texto integral em traces ou labels de métricas.
 - Implemente anonimização e expiração verificável em 90 dias.
 
-## Entrega ao revisor
+## Handoff e revisão
 
-Forneça:
+Ao encerrar trabalho que altere o projeto, forneça, conforme aplicável:
 
 - matriz completa de `AC-01` a `AC-20`;
 - comandos e resultados de lint, typecheck e todos os níveis de teste;
@@ -103,4 +106,6 @@ Forneça:
 - instruções para iniciar, ingerir fixtures, consultar e reproduzir evidências;
 - commit ou diff exato submetido à revisão.
 
-O revisor poderá reprovar a implementação por evidência insuficiente mesmo quando o comportamento aparente estiver correto.
+O revisor deve inspecionar o diff e executar as evidências, não apenas confiar
+em relatórios. Evidência insuficiente pode reprovar uma alteração mesmo quando
+o comportamento aparente estiver correto.

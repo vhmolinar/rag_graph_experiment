@@ -462,7 +462,63 @@ não bloqueantes; podem ser revistas pelo usuário.
    fora do escopo declarado de T06. Meramente registrado aqui para
    referência futura (T18, rastreabilidade).
 
-### 10.7 Incidentes de cadeia de suprimentos
+### 10.7 Registro do implementador — 2026-08-29 (fase 1, correções de revisão T06)
+
+Correções aplicadas ao corrigir `docs/rag/REVIEW_T06.md` (T6-01 a T6-10).
+Superam as interpretações declaradas em §10.6 itens 5 e 7, que se mostraram
+insuficientes na revisão.
+
+1. **Reindexação passou a ser versionada por execução, nunca destrutiva
+   (T6-01).** Nova tabela `index_runs` (migration `0003`) registra cada
+   execução de `rag index` — edição + versões de extração/chunking/embedding/
+   endpoint — com no máximo uma execução `is_active` por edição. Passagens de
+   execuções antigas nunca são apagadas; `--force` minta uma execução nova
+   mesmo que a identidade de versões não tenha mudado, em vez de fazer
+   `DELETE` físico. A idempotência agora compara a identidade completa (as
+   quatro versões), não a mera existência de qualquer passagem — parâmetros
+   novos são executados automaticamente, sem exigir `--force`.
+2. **Reextração é validada contra o que `rag ingest` persistiu, sempre
+   (T6-02).** Antes de decidir qualquer coisa (inclusive no caminho
+   idempotente), `rag index` recompara a reextração com as `Section`/`Page`
+   já persistidas — por conteúdo (`text_sha256` recalculado), não apenas por
+   chave — e falha fechado (`IngestionError`) em qualquer divergência. Isso
+   NÃO exigiu alterar o schema de T03: o campo `text_sha256` já existente em
+   `pages` foi suficiente para a comparação de conteúdo. `ExtractionVersion`
+   passou a ser efetivamente registrada por `rag index` (a lacuna do item 7
+   de §10.6 está corrigida).
+3. **`original_text` sobrevive ao chunking (T6-05).** `ChunkNode`/`Passage`
+   ganharam `original_text`, reconstituído por concatenação dos blocos
+   canônicos de origem (granularidade de bloco — a mesma que o schema de T05
+   preserva); `citable_text` passou a priorizar esse campo. `text`
+   (normalizado) continua alimentando busca lexical/embeddings.
+4. **Adapter de embeddings validado por contrato tipado (T6-03/T6-09).**
+   Resposta agora é parseada por modelos Pydantic e reordenada pelo campo
+   `index` de cada item (nunca pela ordem bruta de `data`); índices ausentes,
+   repetidos ou fora do intervalo, e valores não finitos (NaN/Inf), são
+   rejeitados antes de qualquer persistência.
+5. **HTTPS exigido com credencial (T6-04).** `EmbeddingEndpointSettings`
+   rejeita `api_key` não vazio combinado com `base_url` que não seja
+   `https://`.
+6. **Lote de embeddings configurável e versionado (T6-06).** Novo
+   `EMBEDDING_BATCH_SIZE` (default 64); cada lote é gerado e validado antes
+   de qualquer INSERT — uma falha no meio não publica índice parcial. O
+   tamanho do lote usado é registrado em `EmbeddingVersion.params` (AC-15).
+7. **Chunking configurável via `CHUNKING_*` e opções de CLI (T6-07).**
+   `rag index` não fica mais preso aos defaults de `ChunkingParams`.
+8. **Identidade de versão mais explícita (T6-08).** Rótulos de
+   `ChunkingVersion`/`ExtractionVersion` passaram a incluir um sufixo de
+   revisão do algoritmo (`structural-chunker-v1`/`docling-structural-v1`) —
+   mudar a heurística exige bumpar o sufixo. `ModelEndpointVersion` passou a
+   ser registrada por `rag index`, com o endpoint e uma revisão de modelo
+   opcional (`EMBEDDING_MODEL_REVISION`) em `params`.
+9. **Concorrência serializada por lock de edição (T6-10).** Um
+   `pg_advisory_xact_lock` por `edition_id`, tomado no início da transação de
+   `index_edition`, serializa duas indexações concorrentes da mesma edição —
+   a segunda observa a execução já ativa em vez de competir por uma
+   restrição de unicidade (que deixou de existir sobre o histórico de
+   `index_runs` — só a execução ativa é única por edição).
+
+### 10.8 Incidentes de cadeia de suprimentos
 
 Nenhum. Verificado em 2026-08-28: sem `plain-crypto-js`, sem axios 1.14.1/0.30.4 (axios
 não é dependência), sem referência a `sfrclak.com`. `make security-scan` automatiza essa
@@ -540,6 +596,35 @@ não bloqueantes; podem ser revistas pelo usuário.
    vêm dessa função e só têm acesso a `operation_name`/`error_type`/`attempt`.
    Testado em `test_resilience.py::test_failure_logs_are_free_of_operation_content`
    com `structlog.testing.capture_logs()`.
+9. **Correções da rodada de revisão (REVIEW_T07, 2026-08-30).** Sem mudança de
+   arquitetura; refinamentos para honrar SPEC §11 e AC-14/AC-16 que a
+   implementação anterior não atendia integralmente:
+
+   - **T7-01** — `GenerationEndpointSettings.max_retries` agora é `Literal[0]`
+     (não apenas default 0): a geração NUNCA retenta. `POST /chat/completions`
+     não é idempotente (retentar pode reexecutar uma geração já processada,
+     consumir recursos e produzir resposta diferente). `Literal[0]` rejeita
+     `max_retries != 0` na construção (inclusive via `GENERATOR_MAX_RETRIES`),
+     garantido por `test_non_zero_max_retries_is_rejected` e
+     `test_env_non_zero_max_retries_is_rejected`. Retries continuam permitidos
+     para embedding e reranking (idempotentes).
+   - **T7-02** — A regra T6-04 (credencial só sobre `https://`) foi centralizada
+     em `HttpEndpointSettings` e vale para os três endpoints, incluindo
+     generator e reranker. Mensagens de erro não citam chave, URL nem caminho.
+   - **T7-03** — A resposta do reranker é validada por Pydantic
+     (`_RerankItem`/`_RerankResponse`): finitude do score e cardinalidade
+     exata por documento — duplicatas (mesmo para um único documento), lacunas
+     e índices fora do intervalo são rejeitados com `ModelResponseError`.
+   - **T7-04** — `CircuitBreaker` agora limita o estado half-open a UMA probe
+     simultânea (`_probe_in_progress`); chamadas concorrentes durante a probe
+     são rejeitadas até o sucesso/falha da tentativa de teste.
+   - **T7-05** — Validações de limite (timeout `>0`, `max_retries >=0`,
+     `max_concurrency >0`, backoff `>0`, multiplicador `>=1`,
+     `circuit_breaker_failure_threshold >=1`, reset `>0`) e de URL/credencial
+     passaram a falhar na construção dos settings (`ValidationError`
+     previsível), e não depois com erro genérico de `httpx`/`asyncio`.
+     `hide_input_in_errors` evita que o `str()` do `ValidationError` ecoe o
+      caminho do secret file.
 
 ### 10.9 Registro do implementador — 2026-08-29 (fase 1, T08)
 
@@ -682,7 +767,6 @@ reranking), não bloqueantes; podem ser revistas pelo usuário.
    uma passagem que domina a fusão RRF (alta em ambos os estágios) mas é
    superada no reranking por outra com mais termos da consulta — a inversão
    de ordem é observável e reproduzível.
-
 ### 10.11 Registro do implementador — 2026-08-30 (fase 1, T10)
 
 Interpretações declaradas antes de implementar T10 (planejador de consulta),
@@ -751,3 +835,44 @@ não bloqueantes; podem ser revistas pelo usuário.
    um analizador morfológico. Se não sobrar palavras de conteúdo, a consulta
    cai para `phrase` = pergunta inteira (raro corresponder; o estágio
    semântico continua funcionando).
+### 10.9 — Adendo de revisão T08 (integrado após o registro T09)
+
+8. **A busca lexical seleciona a execução de indexação ATIVA (T8-01).**
+   Sem isso, a integração de T06 deixava o histórico de reindexações
+   reproduzível mas também elegível para a recuperação — o que podia
+   devolver texto, ranking e IDs de evidência obsoletos ao fluxo corrente
+   (AC-15, "conjunto corrente"). `LexicalSearchRepository.search()` agora
+   restringe o `WHERE` com
+   `EXISTS (SELECT 1 FROM index_runs ir WHERE ir.id = p.index_run_id AND ir.is_active)`,
+   aplicado ANTES de frase/FTS/trigram e dos filtros de obra/edição. Política
+   de compatibilidade para linhas legadas (`passages.index_run_id IS NULL` —
+   fixtures de teste, acervo anterior a `rag index`): elas permanecem
+   elegíveis APENAS enquanto a edição não possui execução ativa; assim que a
+   edição é indexada, deixam de ser candidatas junto com as execuções
+   antigas. Essa política nunca reintroduz um conjunto inativo, e é
+   explicitamente testada em
+   `test_lexical_search.py::test_legacy_rows_stay_eligible_until_edition_has_active_run`
+   (linhas NULL permanecem elegíveis sem execução ativa e saem quando a
+   edição ganha uma) e
+   `::test_search_only_returns_passages_of_active_index_run` (duas execuções
+   da mesma edição; a inativa nunca é candidata; o histórico permanece no
+   banco).
+
+9. **`limit` é validado na fronteira do repository (T8-03/R2-T8-03).** O
+   orçamento de candidatos que T09 controla não pode ser burlado por um valor
+   que o PostgreSQL interprete silenciosamente: `LIMIT -1` = ausência de
+   limite e `LIMIT 0` não é erro. `search()` valida TIPO e faixa antes de
+   qualquer SQL: `bool` é subtipo de `int` no Python (`True == 1`) e `1.5`
+   passa nas comparações de faixa, então ambos são rejeitados explicitamente
+   (`isinstance(limit, bool) or not isinstance(limit, int)`), assim como uma
+   string numérica. Em seguida exige `1 <= limit <= MAX_SEARCH_LIMIT`
+   (constante de módulo, default 100; default do parâmetro segue 20).
+   Strings numéricas são rejeitadas mesmo sendo coercíveis porque a fronteira
+   deste repository consome apenas inteiros internos (T09), não entrada de
+   usuário. O teto fixo é o "ponto que deve ser calibrado" de NOTES.md §4 —
+   se o benchmark de T19 indicar outro valor, basta ajustar a constante e a
+   revisão acompanha (nenhuma migration/schema mudou). Testes:
+   `::test_limit_is_respected`, `::test_invalid_limit_is_rejected`
+   (parametrizado sobre 0, -1, `MAX_SEARCH_LIMIT + 1`, 1.5, `True` e `"3"`) e
+   `::test_invalid_limit_rejected_before_obtaining_cursor` (a rejeição ocorre
+   antes de obter cursor/executar SQL).

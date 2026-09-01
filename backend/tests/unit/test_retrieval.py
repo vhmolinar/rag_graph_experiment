@@ -310,3 +310,110 @@ class TestRetrievalResult:
         result = RetrievalResult()
         assert result.answer_run_candidates() == ()
         assert result.policy_version_id is None
+        assert result.embedding_version_id is None
+        assert result.run_id is None
+
+    def test_result_retains_more_fused_than_reranked(self) -> None:
+        """T9-04: todos os itens de `fused` são preservados em `answer_run_candidates`,
+        mesmo quando apenas um subconjunto foi enviado ao reranker."""
+        ids = [uuid4() for _ in range(5)]
+        fused = tuple(
+            _candidate(i, RankingStage.FUSED, 0.05 - idx * 0.01, idx) for idx, i in enumerate(ids)
+        )
+        reranked = tuple(
+            _candidate(i, RankingStage.RERANKED, 0.9 - idx * 0.1, idx)
+            for idx, i in enumerate(ids[:2])
+        )
+        result = RetrievalResult(
+            fused=fused,
+            reranked=reranked,
+            policy_version_id=uuid4(),
+            embedding_version_id=uuid4(),
+        )
+        assert len(result.fused) == 5
+        assert len(result.reranked) == 2
+        candidates = result.answer_run_candidates()
+        assert len(candidates) == 7
+        assert sum(1 for c in candidates if c.stage == RankingStage.FUSED) == 5
+        assert sum(1 for c in candidates if c.stage == RankingStage.RERANKED) == 2
+
+
+class TestRetrievalServiceValidation:
+    """R2-T9-01 e R2-T9-02: validações obrigatórias de run e embedding_version."""
+
+    async def test_retrieval_service_rejects_missing_or_invalid_run(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from rag.application.search import RetrievalService
+        from rag.domain.query import LexicalQuery
+        from rag.domain.versions import EmbeddingVersion
+
+        class DummyEmbedding:
+            @property
+            def embedding_version(self) -> EmbeddingVersion:
+                return EmbeddingVersion(
+                    label="d", model_name="d", dimensions=1024, created_at=utcnow()
+                )
+
+            async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                return []
+
+            async def embed_query(self, text: str) -> list[float]:
+                return []
+
+        class DummyReranker:
+            async def rerank(self, query: str, documents: list[str]) -> list[float]:
+                return []
+
+        service = RetrievalService(DummyEmbedding(), DummyReranker())
+        conn = AsyncMock()
+
+        with pytest.raises(TypeError, match="AnswerRun"):
+            await service.retrieve(
+                conn,
+                lexical_query=LexicalQuery(required_terms=("termo",)),
+                semantic_query="consulta",
+                run=None,  # type: ignore[arg-type]
+            )
+
+        with pytest.raises(TypeError, match="AnswerRun"):
+            await service.retrieve(
+                conn,
+                lexical_query=LexicalQuery(required_terms=("termo",)),
+                semantic_query="consulta",
+                run="not-a-run",  # type: ignore[arg-type]
+            )
+
+    async def test_retrieval_service_rejects_provider_without_embedding_version(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from rag.application.search import RetrievalService
+        from rag.domain.query import LexicalQuery
+
+        class NoVersionProvider:
+            async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                return []
+
+            async def embed_query(self, text: str) -> list[float]:
+                return []
+
+        class DummyReranker:
+            async def rerank(self, query: str, documents: list[str]) -> list[float]:
+                return []
+
+        service = RetrievalService(NoVersionProvider(), DummyReranker())  # type: ignore[arg-type]
+        conn = AsyncMock()
+        run = AnswerRun(
+            question_original="q",
+            question_anonymized="q",
+            explicit_filters=EditionFilter(),
+            created_at=utcnow(),
+        )
+
+        with pytest.raises(TypeError, match="embedding_version"):
+            await service.retrieve(
+                conn,
+                lexical_query=LexicalQuery(required_terms=("termo",)),
+                semantic_query="consulta",
+                run=run,
+            )

@@ -39,6 +39,7 @@ ALL_TABLES = (
     "summary_supports",
     "summaries",
     "passages",
+    "index_runs",
     "pages",
     "sections",
     "derived_artifacts",
