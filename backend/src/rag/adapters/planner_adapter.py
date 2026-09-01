@@ -18,7 +18,7 @@ import httpx
 from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
-from rag.adapters.model_settings import ModelAuthSettings, ResilienceSettings
+from rag.adapters.model_settings import HttpEndpointSettings
 from rag.adapters.resilience import CircuitBreaker, SleepFn, call_with_resilience
 from rag.domain.enums import Depth
 from rag.domain.errors import (
@@ -38,8 +38,14 @@ _DEPTH_INSTRUCTIONS: dict[Depth, str] = {
 }
 
 
-class PlannerEndpointSettings(ModelAuthSettings, ResilienceSettings):
-    """Configuração do endpoint de planejamento (compatível com OpenAI)."""
+class PlannerEndpointSettings(HttpEndpointSettings):
+    """Configuração do endpoint de planejamento (compatível com OpenAI).
+
+    Herda `HttpEndpointSettings` (SPEC §11, AC-16): URL http(s) válida e
+    recusa de credencial sobre `http://` — `Authorization: Bearer` nunca
+    trafega em texto claro (T10-04 da revisão; mesma regra dos adapters de
+    T07).
+    """
 
     model_config = SettingsConfigDict(env_prefix="PLANNER_", extra="ignore")
 

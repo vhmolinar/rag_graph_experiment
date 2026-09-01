@@ -39,3 +39,13 @@ class TestModelAuthSettings:
         empty.write_text("   \n", encoding="utf-8")
         with pytest.raises(ValidationError, match="vazio"):
             ModelAuthSettings(api_key_file=empty)
+
+    def test_error_message_does_not_leak_secret_file_path(self, tmp_path: Path) -> None:
+        # AC-16/T7-05: o erro de configuração não expõe o caminho local do
+        # secret file.
+        missing = tmp_path / "segredo-nao-existe"
+        with pytest.raises(ValidationError) as exc_info:
+            ModelAuthSettings(api_key_file=missing)
+        rendered = str(exc_info.value)
+        assert "segredo-nao-existe" not in rendered
+        assert str(tmp_path) not in rendered

@@ -162,6 +162,8 @@ class RetrievalResult(BaseModel):
     fused: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
     reranked: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
     policy_version_id: UUID | None = None
+    embedding_version_id: UUID | None = None
+    run_id: UUID | None = None
 
     def answer_run_candidates(self) -> tuple[RankedCandidate, ...]:
         """Candidatos de todos os estágios para persistir em

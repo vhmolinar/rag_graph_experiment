@@ -159,7 +159,7 @@ class TestResolveNaturalFilters:
 
     def test_comparative_mention_without_filter_is_not_applied(self) -> None:
         filters = resolve_natural_filters(
-            "Compara o spleen em Dom Casmurro e Memórias Póstumas de Brás Cubas.",
+            "Compara o spleen de Dom Casmurro e de Memórias Póstumas de Brás Cubas.",
             _catalog(),
         )
         assert filters.is_empty()
@@ -179,6 +179,40 @@ class TestResolveNaturalFilters:
         palavra, nunca substring)."""
         filters = resolve_natural_filters(
             "Na semana de Dom Casmurro, o que trata o ciúme?", _catalog()
+        )
+        assert filters.is_empty()
+
+    def test_no_means_inclusion_when_adjacent(self) -> None:
+        """T10-03: "no" (=em o) imediatamente antes da menção é inclusão."""
+        filters = resolve_natural_filters("No Dom Casmurro, qual é o tema?", _catalog())
+        assert len(filters.include_work_ids) == 1
+        assert not filters.exclude_work_ids
+
+    def test_na_means_inclusion_when_adjacent(self) -> None:
+        """T10-03: "na" (=em a) imediatamente antes da menção é inclusão."""
+        filters = resolve_natural_filters("Na Dom Casmurro, o que trata o ciúme?", _catalog())
+        assert len(filters.include_work_ids) == 1
+        assert not filters.exclude_work_ids
+
+    def test_em_means_inclusion_when_adjacent(self) -> None:
+        """T10-03: "em" imediatamente antes da menção é inclusão."""
+        filters = resolve_natural_filters("Em Dom Casmurro, o que trata o ciúme?", _catalog())
+        assert len(filters.include_work_ids) == 1
+        assert not filters.exclude_work_ids
+
+    def test_positional_preposition_away_from_mention_is_not_a_filter(self) -> None:
+        """T10-03: "na" que modifica outra palavra (não imediatamente antes da
+        menção) NÃO é sina de inclusão."""
+        filters = resolve_natural_filters(
+            "Na semana de Dom Casmurro, o que trata o ciúme?", _catalog()
+        )
+        assert filters.is_empty()
+
+    def test_em_as_question_word_is_not_a_filter(self) -> None:
+        """T10-03: "em que capítulo de Dom Casmurro" (navegacional) não infere
+        inclusão — a preposição "em" não está imediatamente antes da menção."""
+        filters = resolve_natural_filters(
+            "Em que capítulo de Dom Casmurro fica o ciúme?", _catalog()
         )
         assert filters.is_empty()
 

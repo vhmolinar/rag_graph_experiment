@@ -19,8 +19,8 @@ from psycopg import AsyncConnection
 
 from rag.application.planning import PlannerService
 from rag.domain.enums import AnswerMode, Depth, Intent, SearchStrategy
-from rag.domain.errors import ModelTimeoutError
-from rag.domain.planning import CatalogEntry
+from rag.domain.errors import ModelTimeoutError, ModelUnavailableError
+from rag.domain.planning import CatalogEntry, merge_filters
 from rag.domain.providers import PlannedQuery
 from rag.domain.query import QueryRequest
 
@@ -59,11 +59,16 @@ def service(empty_catalog: None) -> PlannerService:
     return PlannerService()
 
 
+@pytest.fixture
+def service_with_provider(empty_catalog: None) -> PlannerService:
+    return PlannerService(FakePlannerProvider())
+
+
 class TestAutomaticStrategy:
     async def test_conceptual_resolves_expanded_with_explanation(
-        self, service: PlannerService
+        self, service_with_provider: PlannerService
     ) -> None:
-        plan = await service.plan(
+        plan = await service_with_provider.plan(
             _conn(), _request("Qual é a concepção de spleen em Dom Casmurro?")
         )
         assert plan.intent is Intent.CONCEPTUAL
@@ -81,8 +86,8 @@ class TestAutomaticStrategy:
         assert plan.needs_diversity is False
         assert plan.needs_hierarchical is False
 
-    async def test_comparative_seeks_coverage(self, service: PlannerService) -> None:
-        plan = await service.plan(
+    async def test_comparative_seeks_coverage(self, service_with_provider: PlannerService) -> None:
+        plan = await service_with_provider.plan(
             _conn(), _request("Compara o spleen em Dom Casmurro e Memórias Póstumas.")
         )
         assert plan.intent is Intent.COMPARATIVE
@@ -105,11 +110,36 @@ class TestExplicitStrategy:
         assert plan.strategy_explanation.requested is SearchStrategy.LITERAL
         assert plan.strategy_explanation.chosen is SearchStrategy.LITERAL
 
-    async def test_expanded_is_respected(self, service: PlannerService) -> None:
-        plan = await service.plan(
+    async def test_expanded_is_respected(self, service_with_provider: PlannerService) -> None:
+        plan = await service_with_provider.plan(
             _conn(), _request("Qual é a concepção de spleen?", SearchStrategy.EXPANDED)
         )
         assert plan.strategy is SearchStrategy.EXPANDED
+        assert plan.subquestions, "expanded sem provedor não pode declarar expansão sem expandir"
+
+
+class TestExpandedRequiresProvider:
+    async def test_explicit_expanded_without_provider_fails_closed(
+        self, service: PlannerService
+    ) -> None:
+        """T10-02: expanded SEM provedor NUNCA produz um plano que declara
+        expansão sem expansão a executar — falha tipada."""
+        with pytest.raises(ModelUnavailableError):
+            await service.plan(
+                _conn(), _request("Qual é a concepção de spleen?", SearchStrategy.EXPANDED)
+            )
+
+    async def test_automatic_expanded_without_provider_fails_closed(
+        self, service: PlannerService
+    ) -> None:
+        """T10-02: automatic de pergunta conceitual resolve `expanded`; sem
+        provedor, falha tipada em vez de devolver expansão vazia."""
+        with pytest.raises(ModelUnavailableError):
+            await service.plan(_conn(), _request("Qual é a concepção de spleen?"))
+        with pytest.raises(ModelUnavailableError):
+            await service.plan(
+                _conn(), _request("Compara o spleen em Dom Casmurro e Memórias Póstumas.")
+            )
 
 
 class TestProviderIntegration:
@@ -188,10 +218,63 @@ class TestNaturalFilters:
         plan = await service.plan(
             _conn(),
             _request(
-                "Qual é a concepção de spleen?",
+                "Quem escreveu Dom Casmurro?",
                 include_edition_ids=[edition],
             ),
         )
-        # Os filtros explícitos pertencem à `QueryRequest`/`AnswerRun`; os
+        # Os filtros explícitos pertencem a `QueryRequest`/`AnswerRun`; os
         # inferidos NÃO devem duplicá-los.
         assert plan.inferred_filters.is_empty()
+
+
+class TestEffectiveFilters:
+    def _catalog(self, monkeypatch: pytest.MonkeyPatch, work: UUID, edition: UUID) -> None:
+        async def catalog(_conn: AsyncConnection) -> dict[str, CatalogEntry]:
+            return {
+                "dom casmurro": CatalogEntry(
+                    work_id=work, title="Dom Casmurro", edition_ids=(edition,)
+                )
+            }
+
+        monkeypatch.setattr(PlannerService, "_load_catalog", staticmethod(catalog))
+
+    async def test_plan_carries_merged_effective_filters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T10-01: o plano do serviço expõe o filtro efetivo fundido
+        (explicit + inferred com prioridade), pronto para a recuperação;
+        `inferred_filters` permanece separado para as chips."""
+        work, edition = uuid4(), uuid4()
+        self._catalog(monkeypatch, work, edition)
+        request = _request("No Dom Casmurro, o que trata o ciúme?", exclude_edition_ids=[edition])
+        plan = await PlannerService().plan(_conn(), request)
+
+        assert plan.inferred_filters.include_work_ids == frozenset({work})
+        assert plan.inferred_filters.exclude_edition_ids == frozenset()
+        assert plan.effective_filters == merge_filters(
+            request.explicit_filter(), plan.inferred_filters
+        )
+        assert plan.effective_filters.include_work_ids == frozenset({work})
+        assert plan.effective_filters.exclude_edition_ids == frozenset({edition})
+        assert not (
+            plan.effective_filters.include_edition_ids & plan.effective_filters.exclude_edition_ids
+        )
+        assert not (
+            plan.effective_filters.include_work_ids & plan.effective_filters.exclude_work_ids
+        )
+
+    async def test_explicit_edition_exclusion_preserved_in_effective(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T10-01/AC-07: a decisão explícita (edição excluída) permanece no
+        filtro efetivo decidido pelo serviço, sem conflito include/exclude."""
+        work, edition = uuid4(), uuid4()
+        self._catalog(monkeypatch, work, edition)
+        request = _request("No Dom Casmurro, o que trata o ciúme?", exclude_edition_ids=[edition])
+        plan = await PlannerService().plan(_conn(), request)
+
+        effective = plan.effective_filters
+        assert effective.exclude_edition_ids == frozenset({edition})
+        assert edition not in effective.include_edition_ids
+        assert effective.include_work_ids == frozenset({work})
+        assert not (effective.include_work_ids & effective.exclude_work_ids)

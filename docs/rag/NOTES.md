@@ -836,3 +836,25 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
     fase 1 continuam sendo ingest/ocr/index/inspect). O enriquecimento é
     invocado via `EnrichmentService`; integração no CLI/API fica para T14+
     se a operação o exigir.
+
+## 11. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T10)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T10.md`
+(T10-01 a T10-04). Elas complementam o registro §10.11.
+
+1. **Filtro efetivo obrigatório no plano.** `QueryPlan` ganhou
+   `effective_filters: EditionFilter`; `PlannerService.plan()` calcula
+   `merge_filters(request.explicit_filter(), inferred)`, mantendo
+   `inferred_filters` para os chips. A recuperação deve consumir somente o
+   filtro efetivo.
+2. **`expanded` exige provedor de planejamento.** Sem provedor, a estratégia
+   `expanded`, automática ou explícita, falha fechada com
+   `ModelUnavailableError`; o plano não declara expansão que não possa executar.
+3. **Sinais posicionais `no`/`na`/`em`.** Essas preposições são sinais de
+   inclusão apenas quando imediatamente antes da menção à obra; menções
+   ambíguas continuam sem filtro inferido.
+4. **Segurança do endpoint de planejamento.** `PlannerEndpointSettings` herda
+   `HttpEndpointSettings`: Bearer sobre `http://` é recusado; sem credencial,
+   `http://` continua permitido.
+5. **AC-07 permanece parcial.** A cobertura de T10 vale para planejamento e
+   recuperação; o critério global exige a prova ponta a ponta de T13.

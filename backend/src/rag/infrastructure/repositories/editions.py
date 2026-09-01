@@ -23,11 +23,14 @@ class EditionsRepository:
                     INSERT INTO editions (id, work_id, title, publisher, publication_year,
                                           isbn, edition_label, source_type, source_sha256,
                                           license_status, ingestion_status, extraction_warnings,
+                                          canonical_fingerprint,
                                           created_at)
                     VALUES (%(id)s, %(work_id)s, %(title)s, %(publisher)s,
                             %(publication_year)s, %(isbn)s, %(edition_label)s,
                             %(source_type)s, %(source_sha256)s, %(license_status)s,
-                            %(ingestion_status)s, %(extraction_warnings)s, %(created_at)s)
+                            %(ingestion_status)s, %(extraction_warnings)s,
+                            %(canonical_fingerprint)s,
+                            %(created_at)s)
                     """,
                     {
                         "id": edition.id,
@@ -42,6 +45,7 @@ class EditionsRepository:
                         "license_status": edition.license_status.value,
                         "ingestion_status": edition.ingestion_status.value,
                         "extraction_warnings": json.dumps(list(edition.extraction_warnings)),
+                        "canonical_fingerprint": edition.canonical_fingerprint,
                         "created_at": edition.created_at,
                     },
                 )
@@ -80,7 +84,7 @@ class EditionsRepository:
             await cur.execute(
                 "SELECT id, work_id, title, publisher, publication_year, isbn, "
                 "edition_label, source_type, source_sha256, license_status, "
-                "ingestion_status, extraction_warnings, created_at "
+                "ingestion_status, extraction_warnings, canonical_fingerprint, created_at "
                 "FROM editions WHERE id = %s",
                 (edition_id,),
             )
@@ -134,3 +138,37 @@ class EditionsRepository:
                 "UPDATE editions SET ingestion_status = %s WHERE id = %s",
                 (status.value, edition_id),
             )
+
+    async def backfill_canonical_fingerprint(self, edition_id: UUID, fingerprint: str) -> bool:
+        """Preenche fingerprint ausente por compare-and-set.
+
+        Retorna `True` quando gravou e `False` na repetição idempotente. Uma
+        identidade existente divergente é conflito: backfill nunca funciona
+        como rebaseline silencioso.
+        """
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE editions SET canonical_fingerprint = %s "
+                "WHERE id = %s AND canonical_fingerprint IS NULL "
+                "RETURNING canonical_fingerprint",
+                (fingerprint, edition_id),
+            )
+            if await cur.fetchone() is not None:
+                return True
+            await cur.execute(
+                "SELECT canonical_fingerprint FROM editions WHERE id = %s",
+                (edition_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            raise ConflictError(
+                "Edição deixou de existir durante o backfill.",
+                context={"edition_id": str(edition_id)},
+            )
+        if row["canonical_fingerprint"] == fingerprint:
+            return False
+        raise ConflictError(
+            "Fingerprint canônico existente diverge da reextração; backfill não sobrescreve "
+            "identidade estabelecida.",
+            context={"edition_id": str(edition_id)},
+        )
