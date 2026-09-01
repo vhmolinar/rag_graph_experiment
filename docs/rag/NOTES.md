@@ -859,20 +859,60 @@ não bloqueantes; podem ser revistas pelo usuário.
    banco).
 
 9. **`limit` é validado na fronteira do repository (T8-03/R2-T8-03).** O
-   orçamento de candidatos que T09 controla não pode ser burlado por um valor
-   que o PostgreSQL interprete silenciosamente: `LIMIT -1` = ausência de
-   limite e `LIMIT 0` não é erro. `search()` valida TIPO e faixa antes de
-   qualquer SQL: `bool` é subtipo de `int` no Python (`True == 1`) e `1.5`
-   passa nas comparações de faixa, então ambos são rejeitados explicitamente
-   (`isinstance(limit, bool) or not isinstance(limit, int)`), assim como uma
-   string numérica. Em seguida exige `1 <= limit <= MAX_SEARCH_LIMIT`
-   (constante de módulo, default 100; default do parâmetro segue 20).
-   Strings numéricas são rejeitadas mesmo sendo coercíveis porque a fronteira
-   deste repository consome apenas inteiros internos (T09), não entrada de
-   usuário. O teto fixo é o "ponto que deve ser calibrado" de NOTES.md §4 —
-   se o benchmark de T19 indicar outro valor, basta ajustar a constante e a
-   revisão acompanha (nenhuma migration/schema mudou). Testes:
-   `::test_limit_is_respected`, `::test_invalid_limit_is_rejected`
-   (parametrizado sobre 0, -1, `MAX_SEARCH_LIMIT + 1`, 1.5, `True` e `"3"`) e
-   `::test_invalid_limit_rejected_before_obtaining_cursor` (a rejeição ocorre
-   antes de obter cursor/executar SQL).
+    orçamento de candidatos que T09 controla não pode ser burlado por um valor
+    que o PostgreSQL interprete silenciosamente: `LIMIT -1` = ausência de
+    limite e `LIMIT 0` não é erro. `search()` valida TIPO e faixa antes de
+    qualquer SQL: `bool` é subtipo de `int` no Python (`True == 1`) e `1.5`
+    passa nas comparações de faixa, então ambos são rejeitados explicitamente
+    (`isinstance(limit, bool) or not isinstance(limit, int)`), assim como uma
+    string numérica. Em seguida exige `1 <= limit <= MAX_SEARCH_LIMIT`
+    (constante de módulo, default 100; default do parâmetro segue 20).
+    Strings numéricas são rejeitadas mesmo sendo coercíveis porque a fronteira
+    deste repository consome apenas inteiros internos (T09), não entrada de
+    usuário. O teto fixo é o "ponto que deve ser calibrado" de NOTES.md §4 —
+    se o benchmark de T19 indicar outro valor, basta ajustar a constante e a
+    revisão acompanha (nenhuma migration/schema mudou). Testes:
+    `::test_limit_is_respected`, `::test_invalid_limit_is_rejected`
+    (parametrizado sobre 0, -1, `MAX_SEARCH_LIMIT + 1`, 1.5, `True` e `"3"`) e
+    `::test_invalid_limit_rejected_before_obtaining_cursor` (a rejeição ocorre
+    antes de obter cursor/executar SQL).
+
+## 11. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T10)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T10.md`
+(T10-01 a T10-04), resultado anterior **reprovado**. Superam o §10.11 item 6
+na parte dos sinais de inclusão e o §10.11 item 7 na parte da aplicação no
+serviço.
+
+1. **Filtro efetivo obrigatório no plano (T10-01).** `QueryPlan` ganhou
+   `effective_filters: EditionFilter`; `PlannerService.plan()` calcula
+   `effective_filters = merge_filters(request.explicit_filter(), inferred)`,
+   mantendo `inferred_filters` para os chips. A recuperação (T12/T13) deve
+   consumir `QueryPlan.effective_filters`, nunca a lista inferida crua.
+   A integração prova o fluxo planejador→recuperação:
+   `test_effective_filters_flow_into_retrieval_stages`.
+2. **`expanded` exige provedor de planejamento (T10-02).** Sem provedor, a
+   estratégia `expanded` (automática ou explícita) falha fechada com
+   `ModelUnavailableError` — o plano NUNCA declara expansão sem expansão a
+   executar. Não foi implementada expansão determinística (opção alternativa
+   da revisão): a geração limitada de subperguntas/aliases é a
+   responsabilidade reservada ao `PlannerProvider` (NOTES.md §10.11 item 3),
+   e um substituto heurístico seria um fallback silencioso de qualidade
+   enganosa.
+3. **Sinais posicionais `no`/`na`/`em` (T10-03).** As preposições locativas
+   (`no` = "em o", `na` = "em a", `em`) viram sinais de inclusão SÓ quando a
+   palavra imediatamente antes da menção (`_POSITIONAL_INCLUSION_CUES`),
+   nunca como preposições fora de uma menção ("Na semana de Dom Casmurro"
+   não infere). Correção da lacuna do §10.11 item 6 (que já os listava mas o
+   código não os implementava).
+4. **`PlannerEndpointSettings` herda `HttpEndpointSettings` (T10-04).**
+   O adapter do planejador passou à mesma regra dos adapters de T07
+   (T7-02/T6-04): credencial Bearer sobre `http://` é recusada na construção
+   (AC-16). Sem credencial, `http://` permanece permitido.
+
+5. **AC-07 permanece `◐` na matriz (ressalva R2-T10-01 da rodada 2).**
+   A revisão da rodada 2 aprovou T10 com ressalva documental: a cobertura de
+   filtros vale para o planejador e os estágios de recuperação já
+   implementados, mas o critério global "em todos os estágios" não pode ser
+   `✅` enquanto o fluxo de geração/verificação (T13) não existir — a matriz
+   não promove o AC global antes da prova de ponta a ponta.

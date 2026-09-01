@@ -16,16 +16,16 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
-| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work`, `test_filter_include_edition`, `test_filter_exclude_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita; ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`. Falta o estágio de geração/verificação (T13) |
+| AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work`, `test_filter_include_edition`, `test_filter_exclude_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita — incl. `no`/`na`/`em` posicionais — e ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planner_service.py::TestEffectiveFilters` (filtro efetivo fundido no plano do serviço), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`/`test_plan_carries_effective_filters_against_real_catalog`/`test_no_na_em_infer_inclusion_against_real_catalog`/`test_effective_filters_flow_into_retrieval_stages` (filtro efetivo do plano consumido pela recuperação: obra excluída ausente de SQL/vetorial/fusão/reranker). Estado `◐` (não `✅`): a cobertura de filtros vale para o planejador e os estágios de recuperação já implementados — falta o estágio de geração/verificação (T13) para a prova de ponta a ponta do critério global |
 | AC-08 | Modo quote sem texto sintetizado | ◐ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo) |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
-| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada). Execução da diversidade/limite flexível na montagem de contexto e declaração de limitação: T12/T13 |
+| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planner_service.py::TestExpandedRequiresProvider` (expanded exige provedor — falha tipada sem provedor; nunca se declara expansão sem expandir), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation` (comparativa → expanded com explicação estruturada). Execução da diversidade/limite flexível na montagem de contexto e declaração de limitação: T12/T13 |
 | AC-12 | Resumos levam a passagens; nunca citados | ◐ | T02: `test_knowledge.py::TestSummary`, `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section` (cabeçalho contextual sempre distinto do texto citável); resumos em si ficam para T11 |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T7-01: `test_generation_adapter.py::test_timeout_raises_model_timeout_error`/`test_5xx_raises_model_unavailable_error`/`test_connection_error_raises_model_unavailable_error` (geração NÃO retenta operação não idempotente — uma única chamada HTTP, default `max_retries=0`) + `test_default_max_retries_is_zero`; R2-T7-01: `test_generation_adapter.py::test_non_zero_max_retries_is_rejected` e `test_env_non_zero_max_retries_is_rejected` (retry de geração impossível: `max_retries: Literal[0]`, rejeita `GENERATOR_MAX_RETRIES!=0`); T7-04: `test_resilience.py::test_half_open_lets_only_one_probe_reach_endpoint`. Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02: `test_versions.py`, `test_runs.py` (+`TestTransitions`, R05); T03: `test_version_tables_reject_update_and_delete`, `test_migration_is_deterministic_regardless_of_env` (R02), `test_prompt_version_identity_includes_template_hash` (R03), CHECKs terminais (R05); T06: histórico append-only por `IndexRun` (`test_force_reindexes_preserves_passage_history`, `test_different_chunking_params_same_edition_creates_new_run_without_force`), fingerprint integral (`test_fingerprint.py`), backfill write-once/idempotente e concorrente (`test_fingerprint_backfill_is_write_once_and_idempotent`, `test_fingerprint_backfill_never_overwrites_divergent_identity`, `test_concurrent_fingerprint_backfills_converge_idempotently`) e derivado OCR correto (`test_fingerprint_backfill_uses_registered_ocr_derivative`); `test_different_chunking_params_create_new_version` (reindexação nunca sobrescreve versão existente); T08 (T8-01): `test_lexical_search.py::test_search_only_returns_passages_of_active_index_run` (a recuperação usa só a execução ATIVA enquanto o histórico fica reproduzível no banco) e `::test_legacy_rows_stay_eligible_until_edition_has_active_run` (política de compatibilidade legada, sem reintroduzir conjunto inativo). Falta: `AnswerRun` completo (T18) |
-| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T7-02: `test_http_with_api_key_is_rejected`/`test_http_with_api_key_file_is_rejected` (generator/reranker recusam credencial Bearer sobre `http://`) e `test_https_with_api_key_is_accepted`; T7-05: `test_error_message_does_not_leak_secret_file_path` + `hide_input_in_errors` (erros de configuração não ecoam o caminho do secret file nem a URL). Falta: API/traces (T18) |
+| AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T7-02: `test_http_with_api_key_is_rejected`/`test_http_with_api_key_file_is_rejected` (generator/reranker recusam credencial Bearer sobre `http://`) e `test_https_with_api_key_is_accepted`; T10-04: `test_planner_adapter.py::TestEndpointSecurity` (o adapter do planner herda `HttpEndpointSettings` — `http://` com `api_key`/`api_key_file` é recusado, https aceito); T7-05: `test_error_message_does_not_leak_secret_file_path` + `hide_input_in_errors` (erros de configuração não ecoam o caminho do secret file nem a URL). Falta: API/traces (T18) |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ⬜ | T14/T16 |
 | AC-19 | Benchmark repetível, compara sem sobrescrever | ⬜ | T19 |
@@ -1004,13 +1004,77 @@ reescrita de follow-up com contexto de sessão é T15).
 Limitações conhecidas: classificação de intenção e construção da consulta
 lexical são heurísticas léxicas em português (NOTES.md §4 — calibração no
 benchmark de T19); a resolução de filtros naturais opera por título de obra
-exacto (contíguo, normalizado) — menções por título curto/parcial ou por
+exato (contíguo, normalizado) — menções por título curto/parcial ou por
 autor não são resolvidas nesta tarefa; a polaridade dos filtros naturais é
-por sinais léxicos conservadores ("só", "somente", ..., "exceto", "sem", ...)
-— preposições locativas ("em/no/na") NÃO são sinais, por desenho
-(ambigüidade não é aplicada silenciosamente); o provedor de planejamento
-(adapter HTTP) ainda não está conectado a um endpoint real de modelo em
-produção (T14 os integra).
+por sinais léxicos conservadores ("só", "somente", ..., "no"/"na"/"em"
+posicionais, ..., "exceto", "sem", ...) e a menção ambígua não é aplicada
+silenciosamente; o provedor de planejamento (adapter HTTP) ainda não está
+conectado a um endpoint real de modelo em produção (T14 os integra).
+
+### T10 — Correções da revisão (`docs/rag/REVIEW_T10.md`, T10-01 a T10-04)
+
+Resultado anterior: reprovado. Correções implementadas e verificadas:
+
+- **T10-01 (Alto)** — `QueryPlan` ganhou `effective_filters: EditionFilter`
+  (`domain/query.py`), e `PlannerService.plan()` calcula
+  `merge_filters(request.explicit_filter(), inferred)` (`application/planning.py`),
+  mantendo `inferred_filters` separado para os chips. O plano produzido pelo
+  serviço entrega o escopo pronto à recuperação. Evidência:
+  `test_planner_service.py::TestEffectiveFilters`
+  (`test_plan_carries_merged_effective_filters`,
+  `test_explicit_edition_exclusion_preserved_in_effective`),
+  `test_planning_pipeline.py::test_plan_carries_effective_filters_against_real_catalog`
+  e `test_effective_filters_flow_into_retrieval_stages` (filtro efetivo
+  consumido pela recuperação: obra excluída ausente de lexical/vetorial/fusão/
+  reranker — AC-07).
+- **T10-02 (Alto)** — a estratégia `expanded` agora exige provedor: sem
+  provedor (automático ou explícito) o plano falha fechado com
+  `ModelUnavailableError` em vez de declarar expansão sem expandir.
+  Evidência: `test_planner_service.py::TestExpandedRequiresProvider`
+  (`test_explicit_expanded_without_provider_fails_closed`,
+  `test_automatic_expanded_without_provider_fails_closed`); os testes
+  conceitual/comparativa que exercitam `expanded` usam `FakePlannerProvider`.
+- **T10-03 (Médio)** — `no`/`na`/`em` adicionados como sinais POSICIONAIS de
+  inclusão (`_INCLUSION_CUES` + `_POSITIONAL_INCLUSION_CUES` em
+  `domain/planning.py`): só contam quando a palavra imediatamente antes da
+  menção, sem confundir preposições fora de uma menção ("Na semana de Dom
+  Casmurro" não infere). Evidência:
+  `test_planning.py::TestResolveNaturalFilters` (`test_no_means_inclusion_when_adjacent`,
+  `test_na_means_inclusion_when_adjacent`, `test_em_means_inclusion_when_adjacent`,
+  `test_positional_preposition_away_from_mention_is_not_a_filter`,
+  `test_em_as_question_word_is_not_a_filter`) e
+  `test_planning_pipeline.py::test_no_na_em_infer_inclusion_against_real_catalog`
+  (incl. título sem acento, catálogo real).
+- **T10-04 (Médio)** — `PlannerEndpointSettings` passou a herdar
+  `HttpEndpointSettings` (SPEC §11/AC-16): credencial Bearer sobre `http://`
+  é recusada na construção. Evidência:
+  `test_planner_adapter.py::TestEndpointSecurity`
+  (`test_http_with_api_key_is_rejected`,
+  `test_http_with_api_key_file_is_rejected`,
+  `test_https_with_api_key_is_accepted`,
+  `test_https_with_api_key_file_is_accepted`,
+  `test_http_without_credential_is_accepted`).
+
+Comandos executados em 2026-09-01 (backend; frontend inalterado):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK — All checks passed |
+| `uv run ruff format --check src tests` | OK — 99 arquivos |
+| `uv run mypy src tests` | OK — 99 arquivos (strict) |
+| `uv run pytest -q tests/unit/test_planning.py tests/unit/test_planner_service.py tests/unit/test_query.py tests/unit/test_planner_adapter.py` | OK — 88 passed |
+| `uv run pytest tests/unit -q` | OK — 442 passed, 3 skipped |
+| `uv run pytest tests/integration/test_planning_pipeline.py -q` | OK — 10 passed (PostgreSQL real; podman + ryuk desativado) |
+| `uv run pytest tests/integration -q` | OK — 185 passed, 1 skipped (PostgreSQL real; podman + ryuk desativado) |
+
+### T10 — Rodada 2 de revisão (`docs/rag/REVIEW_T10_ROUND2.md`, R2-T10-01)
+
+Resultado anterior: reprovado → **aprovado com ressalvas**. Os quatro achados
+T10-01 a T10-04 foram revalidados como corrigidos. Ressalva documental
+R2-T10-01: AC-07 permanece `◐` na matriz (a cobertura vale para o planejador
+e os estágios de recuperação já implementados; falta o estágio de
+geração/verificação de T13 para o critério global "em todos os estágios").
+Nenhuna alteração de código; ajuste documental da linha AC-07 da matriz.
 ### T08 — Correções da revisão (`docs/rag/REVIEW_T08.md`, T8-01 a T8-03)
 
 Resposta detalhada em `docs/rag/REVIEW_RESPONSE_T08.md`. Nenhuma dependência
