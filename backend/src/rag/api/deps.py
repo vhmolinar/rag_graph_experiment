@@ -35,6 +35,7 @@ from rag.application.context import ContextService
 from rag.application.dissertative import DissertativeService
 from rag.application.planning import PlannerService
 from rag.application.search import RetrievalService
+from rag.application.session_context import SessionContextService
 from rag.domain.context import ContextPolicy
 from rag.domain.providers import (
     EmbeddingProvider,
@@ -59,6 +60,7 @@ class AppDependencies:
     retrieval: RetrievalService
     context: ContextService
     dissertative: DissertativeService
+    session_context: SessionContextService
     retrieval_policy: RetrievalPolicy
     context_policy: ContextPolicy
     verification_policy: VerificationPolicy

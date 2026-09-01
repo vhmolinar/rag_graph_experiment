@@ -1,4 +1,4 @@
-"""Executor de consulta em processo (T14; NOTES.md §10.2 item 1, AC-18).
+"""Executor de consulta em processo (T14/T15; NOTES.md §10.2 item 1, AC-18).
 
 `POST /queries` agenda uma tarefa asyncio (`QueryRegistry.start`); o
 `QueryExecutor` orquesta as etapas da especificação: planejamento (T10) →
@@ -6,6 +6,12 @@ recuperação (T09) → montagem de contexto (T12) → modo quote/dissertativo
 (T12/T13). Cada etapa publica um evento SSE e o flag de cancelamento
 cooperativo (`asyncio.Event`) é verificado ENTRE as etapas — nunca dentro de
 uma chamada ao provedor de modelo (NOTES.md §10.15 item 1).
+
+T15 (contexto de sessão, AC-13): na criação, quando a pergunta pertence a uma
+sessão, o follow-up é reescrito numa pergunta autônoma (`SessionContextService`,
+determinística no domínio) e a rodada é registrada em `session_entries`
+(pergunta original + autônoma). O planejador e a geração usan a pergunta
+autônoma; o gerador recebe também o contexto limitado da sessão (SPEC §9.3).
 
 O `AnswerRun` é persistido em cada transição (status/plan/candidatos/response/
 verification); o executor mantém o `RetrievalResult` em memória entre a
@@ -41,20 +47,21 @@ class QueryExecutor:
 
     async def run(self, query_id: UUID, request: QueryRequest) -> None:
         run: AnswerRun | None = None
+        session_context: str | None = None
         try:
-            run = await self._create_and_start(query_id, request)
+            run, autonomous, session_context = await self._create_and_start(query_id, request)
             self._emit_status(query_id, run, stage="planning")
             if self._cancelled(query_id):
                 await self._cancel(query_id, run)
                 return
 
-            run = await self._plan(query_id, run, request)
+            run = await self._plan(query_id, run, request, autonomous)
             self._emit_status(query_id, run, stage="retrieval")
             if self._cancelled(query_id):
                 await self._cancel(query_id, run)
                 return
 
-            retrieval = await self._retrieve(query_id, run, request)
+            run, retrieval = await self._retrieve(query_id, run, request)
             self._emit_status(query_id, run, stage="context")
             if self._cancelled(query_id):
                 await self._cancel(query_id, run)
@@ -63,7 +70,9 @@ class QueryExecutor:
             if request.answer_mode is AnswerMode.QUOTE:
                 run = await self._quote(query_id, run, request, retrieval)
             else:
-                run = await self._dissertate(query_id, run, request, retrieval)
+                run = await self._dissertate(
+                    query_id, run, request, retrieval, autonomous, session_context
+                )
             self._emit_result(query_id, run)
         except CancelledError:
             raise
@@ -75,7 +84,16 @@ class QueryExecutor:
         finally:
             self._deps.registry.complete(query_id)
 
-    async def _create_and_start(self, query_id: UUID, request: QueryRequest) -> AnswerRun:
+    async def _create_and_start(
+        self, query_id: UUID, request: QueryRequest
+    ) -> tuple[AnswerRun, str, str | None]:
+        """Cria a execução e, em sessão, reescrita o follow-up e registra a rodada.
+
+        A rodada em `session_entries` e a criação da execução vivem na MESMA
+        transação (atomicidade): ou ambas existem, ou nenhuma.
+        """
+        autonomous = request.question
+        session_context: str | None = None
         async with self._deps.db.connection() as conn:
             if request.session_id is not None:
                 session = await SessionsRepository(conn).get(request.session_id)
@@ -84,28 +102,47 @@ class QueryExecutor:
                         "Sessão não encontrada.",
                         context={"session_id": str(request.session_id)},
                     )
+                rewrite = await self._deps.session_context.rewrite(
+                    conn, session_id=request.session_id, question=request.question
+                )
+                autonomous = rewrite.autonomous_question
+                session_context = await self._deps.session_context.prompt_context(
+                    conn, session_id=request.session_id
+                )
             run = AnswerRun(
                 id=query_id,
                 question_original=request.question,
                 question_anonymized=request.question,
                 explicit_filters=request.explicit_filter(),
                 session_id=request.session_id,
+                rewritten_query=autonomous if autonomous != request.question else None,
             )
             runs = AnswerRunsRepository(conn)
             run = await runs.create(run)
             run = await runs.save(run.transition(QueryStatus.RUNNING))
-        return run
+            if request.session_id is not None:
+                await self._deps.session_context.record(
+                    conn,
+                    session_id=request.session_id,
+                    question=request.question,
+                    autonomous_question=autonomous,
+                    answer_run_id=run.id,
+                )
+        return run, autonomous, session_context
 
-    async def _plan(self, query_id: UUID, run: AnswerRun, request: QueryRequest) -> AnswerRun:
+    async def _plan(
+        self, query_id: UUID, run: AnswerRun, request: QueryRequest, autonomous: str
+    ) -> AnswerRun:
         started = time.perf_counter()
         async with self._deps.db.connection() as conn:
-            plan = await self._deps.planner.plan(conn, request)
+            plan = await self._deps.planner.plan(
+                conn, request.model_copy(update={"question": autonomous})
+            )
             run = await AnswerRunsRepository(conn).save(
                 run.transition(
                     QueryStatus.RUNNING,
                     plan=plan,
                     inferred_filters=plan.inferred_filters,
-                    rewritten_query=plan.semantic_query,
                     latencies=(StageLatency(stage="planning", duration_ms=_duration_ms(started)),),
                 )
             )
@@ -113,7 +150,7 @@ class QueryExecutor:
 
     async def _retrieve(
         self, query_id: UUID, run: AnswerRun, request: QueryRequest
-    ) -> RetrievalResult:
+    ) -> tuple[AnswerRun, RetrievalResult]:
         plan = self._require_plan(run)
         filters = merge_filters(request.explicit_filter(), plan.inferred_filters)
         started = time.perf_counter()
@@ -130,10 +167,17 @@ class QueryExecutor:
                 run.transition(
                     QueryStatus.RUNNING,
                     candidates=retrieval.answer_run_candidates(),
-                    latencies=(StageLatency(stage="retrieval", duration_ms=_duration_ms(started)),),
+                    latencies=(
+                        *run.latencies,
+                        StageLatency(stage="retrieval", duration_ms=_duration_ms(started)),
+                    ),
                 )
             )
-        return retrieval
+        # Corregido de T14 (NOTAS.md §10.17): a execução atualizada (revisão
+        # incrementada por as candidatas/latências) deve propagar aos estágios
+        # seguintes — um run obsoleto causaria `ConcurrencyError` na `_quote`/
+        # `_dissertate` (CAS de `save`).
+        return run, retrieval
 
     async def _quote(
         self,
@@ -162,6 +206,8 @@ class QueryExecutor:
         run: AnswerRun,
         request: QueryRequest,
         retrieval: RetrievalResult,
+        autonomous: str,
+        session_context: str | None,
     ) -> AnswerRun:
         plan = self._require_plan(run)
         async with self._deps.db.connection() as conn:
@@ -176,8 +222,8 @@ class QueryExecutor:
         async with self._deps.db.connection() as conn:
             diss = await self._deps.dissertative.answer(
                 conn,
-                question=request.question,
-                session_context=None,  # contexto de sessão é T15
+                question=autonomous,  # pergunta autônoma (AC-13)
+                session_context=session_context,  # contexto limitado da sessão (SPEC §9.3)
                 depth=request.depth,
                 plan=plan,
                 packed=packed,

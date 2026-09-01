@@ -36,6 +36,7 @@ from rag.application.context import ContextService
 from rag.application.dissertative import DissertativeService
 from rag.application.planning import PlannerService
 from rag.application.search import RetrievalService
+from rag.application.session_context import SessionContextService
 from rag.domain.context import ContextPolicy
 from rag.domain.providers import (
     EmbeddingProvider,
@@ -91,6 +92,7 @@ def create_app(
         retrieval=RetrievalService(embedding, reranker),
         context=ContextService(),
         dissertative=DissertativeService(generator, verifier),
+        session_context=SessionContextService(max_history=settings.session_history_limit),
         retrieval_policy=retrieval_policy or RetrievalPolicy.defaults(),
         context_policy=context_policy or ContextPolicy.defaults(),
         verification_policy=verification_policy or VerificationPolicy.defaults(),
