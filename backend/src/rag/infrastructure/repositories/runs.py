@@ -46,13 +46,13 @@ class AnswerRunsRepository:
                                          explicit_filters, inferred_filters, plan,
                                          candidates, selected_evidence_ids, response,
                                          verification, versions, latencies, error_code,
-                                         error_message, created_at)
+                                         error_message, request_id, created_at)
                 VALUES (%(id)s, %(session_id)s, %(status)s, %(question_original)s,
                         %(question_anonymized)s, %(rewritten_query)s,
                         %(explicit_filters)s, %(inferred_filters)s, %(plan)s,
                         %(candidates)s, %(selected_evidence_ids)s, %(response)s,
                         %(verification)s, %(versions)s, %(latencies)s, %(error_code)s,
-                        %(error_message)s, %(created_at)s)
+                        %(error_message)s, %(request_id)s, %(created_at)s)
                 """,
                 {
                     "id": run.id,
@@ -76,6 +76,7 @@ class AnswerRunsRepository:
                     "latencies": Jsonb(data["latencies"]),
                     "error_code": run.error_code.value if run.error_code else None,
                     "error_message": run.error_message,
+                    "request_id": run.request_id,
                     "created_at": run.created_at,
                 },
             )
@@ -100,7 +101,7 @@ class AnswerRunsRepository:
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "SELECT question_original, question_anonymized, explicit_filters, "
-                "created_at FROM answer_runs WHERE id = %(id)s",
+                "request_id, created_at FROM answer_runs WHERE id = %(id)s",
                 {"id": run.id},
             )
             existing = await cur.fetchone()
@@ -115,6 +116,7 @@ class AnswerRunsRepository:
                     ("question_original", run.question_original),
                     ("question_anonymized", run.question_anonymized),
                     ("explicit_filters", data["explicit_filters"]),
+                    ("request_id", run.request_id),
                     ("created_at", run.created_at),
                 )
                 if existing[field] != current
@@ -182,7 +184,8 @@ class AnswerRunsRepository:
                 "SELECT id, session_id, status, question_original, question_anonymized, "
                 "rewritten_query, explicit_filters, inferred_filters, plan, candidates, "
                 "selected_evidence_ids, response, verification, versions, latencies, "
-                "error_code, error_message, created_at, revision FROM answer_runs WHERE id = %s",
+                "error_code, error_message, request_id, created_at, revision "
+                "FROM answer_runs WHERE id = %s",
                 (run_id,),
             )
             row = await cur.fetchone()

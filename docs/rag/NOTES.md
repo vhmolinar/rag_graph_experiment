@@ -1131,3 +1131,56 @@ explicitamente pelo usuário nesta sessão: limitações derivadas no serviço
    readiness dependente de PostgreSQL e liveness sem dependências externas.**
 5. **`rag serve` inicia uvicorn com `create_app()` e `/source` usa
    `asyncio.to_thread` para I/O de artefatos e ranges HTTP.**
+
+## 21. Registro do implementador — 2026-09-02 (fase 1, correções de revisão T14)
+
+1. **Ordem real da pilha de middlewares (T14-01).** Em Starlette,
+   `add_middleware()` insere no início da lista e `build_middleware_stack()`
+   a inverte ao empilhar: o ÚLTIMO registrado fica mais externo. A ordem
+   desejada (externo→interno) `RequestId → SecurityHeaders → RateLimit → CORS`
+   exige registar na ordem inversa. `install_security()` foi corrigida e
+   documentada; a reprodução da revisão (429 sem `X-Request-ID`/headers e com
+   `request_id: "desconhecido"`) agora entrega `X-Request-ID`, todos os
+   headers de segurança e corpo com o MESMO ID do header.
+2. **`request_id` persistido no `AnswerRun` (T14-02).** A columna `request_id`
+   (migration `0010`) é setada na criação pela rota `POST /queries` (a partir
+   do `request.state.request_id`), é imutável por transição, e o envelope de
+   erro terminal (`GET /queries/{id}` e evento SSE `result`) o devolve — nunca
+   vazio no caminho HTTP.
+3. **Limite de crescimento dos buckets do rate limiter (T14-03).**
+   `RateLimitMiddleware` expira buckets inativos (`bucket_ttl_seconds`, coleta
+   periódica) e limita a cardinalidade (`max_buckets`, desalojo LRU); relógio
+   inyectável.
+4. **Cadeia de migrations linearizada.** A revisão `0005` era duplicada por
+   conflito de merge (`0005_enrichment_runs` de T11 vs
+   `0005_answer_runs_error_message` de T14). A migração do erro-message foi
+   renumerada `0009` (down `0008`) e `request_id` fica `0010` (down `0009`).
+5. **`AnswerRun` criado sincronamente na rota.** `POST /queries` cria o run
+   (status `queued`) antes de devolver 202; o executor comeza da transição
+   `queued → running`. Elimina a corrida POST→GET (404 transitório) assinalada
+   como risco residual na revisão e alinha o contrato: o run existe logo após
+   o 202.
+6. **Harness de integração da API.** `build()` injeta `FakePlannerProvider`
+   por padrão (o default de produção aponta para `localhost:8003`) e o seed usa
+   a `embedding_version` do provedor — a busca vetorial filtra por
+   `embedding_version_id` e o versão hardcoded do seed excluía a passagem.
+7. **`RetrievalService.retrieve` exige `run` (fundido de T09/T13).** O
+   executor injeta o run, que o serviço persiste (candidatos/versões); o
+   executor recarrega o registro para continuar e registra a latência do
+   estágio append-only. Sem esta correção, `make typecheck` falhava e o fluxo
+   de consulta quebrava na integração.
+8. **Teste de integração SSE com `httpx.ASGITransport`.** `client.stream()`
+   com ASGI fica disponível só quando a aplicação conclúu o corpo; o teste
+   agora lê até o evento terminal (`result`), que a rota encerra sempre
+   entregue (subscrição ativa ou replay de terminal). Os eventos de estágio
+   são cobertos a nível do broker (`test_api_events.py`).
+
+9. **CORS externo ao rate limiter (T14-R2-01).** A pilha desejada é
+   `RequestId → SecurityHeaders → CORS → RateLimit` (externo→interno): o
+   `CORSMiddleware` fica ENTRE os headers de segurança e o rate limiter. A
+   resposta 429 direta do limiter agora atravessa CORS e expõe
+   `Access-Control-Allow-Origin` para a origem permitida — o SPA pode ler o
+   corpo e `Retry-After` (SPEC §14, AC-18). O preflight OPTIONS é resolvido
+   por CORS antes do limiter (não consome tokens). Registrados na ordem
+   inversa (o último registrado é o mais externo em Starlette): RateLimit,
+   CORS, SecurityHeaders, RequestId.

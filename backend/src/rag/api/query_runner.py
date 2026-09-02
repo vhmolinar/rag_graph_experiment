@@ -22,13 +22,12 @@ from rag.api.deps import AppDependencies
 from rag.api.events import QueryEvent
 from rag.api.schemas import build_query_state
 from rag.domain.enums import AnswerMode, QueryStatus
-from rag.domain.errors import ErrorCode, NotFoundError, RagError
+from rag.domain.errors import ErrorCode, RagError
 from rag.domain.planning import merge_filters
 from rag.domain.query import QueryPlan, QueryRequest
 from rag.domain.retrieval import RetrievalResult
 from rag.domain.runs import AnswerRun, StageLatency
 from rag.infrastructure.repositories.runs import AnswerRunsRepository
-from rag.infrastructure.repositories.sessions import SessionsRepository
 
 _LOGGER = structlog.get_logger(__name__)
 
@@ -39,10 +38,9 @@ class QueryExecutor:
     def __init__(self, deps: AppDependencies) -> None:
         self._deps = deps
 
-    async def run(self, query_id: UUID, request: QueryRequest) -> None:
-        run: AnswerRun | None = None
+    async def run(self, query_id: UUID, request: QueryRequest, run: AnswerRun) -> None:
         try:
-            run = await self._create_and_start(query_id, request)
+            run = await self._start(query_id, run)
             self._emit_status(query_id, run, stage="planning")
             if self._cancelled(query_id):
                 await self._cancel(query_id, run)
@@ -54,7 +52,7 @@ class QueryExecutor:
                 await self._cancel(query_id, run)
                 return
 
-            retrieval = await self._retrieve(query_id, run, request)
+            run, retrieval = await self._retrieve(query_id, run, request)
             self._emit_status(query_id, run, stage="context")
             if self._cancelled(query_id):
                 await self._cancel(query_id, run)
@@ -75,25 +73,10 @@ class QueryExecutor:
         finally:
             self._deps.registry.complete(query_id)
 
-    async def _create_and_start(self, query_id: UUID, request: QueryRequest) -> AnswerRun:
+    async def _start(self, query_id: UUID, run: AnswerRun) -> AnswerRun:
+        """Passa o run criado pela rota (status `queued`) para `running`."""
         async with self._deps.db.connection() as conn:
-            if request.session_id is not None:
-                session = await SessionsRepository(conn).get(request.session_id)
-                if session is None:
-                    raise NotFoundError(
-                        "Sessão não encontrada.",
-                        context={"session_id": str(request.session_id)},
-                    )
-            run = AnswerRun(
-                id=query_id,
-                question_original=request.question,
-                question_anonymized=request.question,
-                explicit_filters=request.explicit_filter(),
-                session_id=request.session_id,
-            )
-            runs = AnswerRunsRepository(conn)
-            run = await runs.create(run)
-            run = await runs.save(run.transition(QueryStatus.RUNNING))
+            run = await AnswerRunsRepository(conn).save(run.transition(QueryStatus.RUNNING))
         return run
 
     async def _plan(self, query_id: UUID, run: AnswerRun, request: QueryRequest) -> AnswerRun:
@@ -113,7 +96,7 @@ class QueryExecutor:
 
     async def _retrieve(
         self, query_id: UUID, run: AnswerRun, request: QueryRequest
-    ) -> RetrievalResult:
+    ) -> tuple[AnswerRun, RetrievalResult]:
         plan = self._require_plan(run)
         filters = merge_filters(request.explicit_filter(), plan.inferred_filters)
         started = time.perf_counter()
@@ -125,15 +108,24 @@ class QueryExecutor:
                 filters=filters,
                 policy=self._deps.retrieval_policy,
                 depth=request.depth,
+                run=run,
             )
+            # `RetrievalService.retrieve` já persiste candidatos e versões no
+            # `AnswerRun` (R2-T9-02); relé o registro para continuar da revisão
+            # atual e registra a latência do estágio (append-only).
+            reloaded = await AnswerRunsRepository(conn).get(run.id)
+            if reloaded is None:  # pragma: no cover - defensivo: acaba de gravar
+                raise RuntimeError("execução não encontrada após recuperação")
             run = await AnswerRunsRepository(conn).save(
-                run.transition(
+                reloaded.transition(
                     QueryStatus.RUNNING,
-                    candidates=retrieval.answer_run_candidates(),
-                    latencies=(StageLatency(stage="retrieval", duration_ms=_duration_ms(started)),),
+                    latencies=(
+                        *reloaded.latencies,
+                        StageLatency(stage="retrieval", duration_ms=_duration_ms(started)),
+                    ),
                 )
             )
-        return retrieval
+        return run, retrieval
 
     async def _quote(
         self,

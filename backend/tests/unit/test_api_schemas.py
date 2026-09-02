@@ -4,9 +4,11 @@ Cobre: derivação de `mode` do tipo da resposta, projeção `AnswerRun` →
 `QueryState` (GET / SSE terminal), e envelope de erro.
 """
 
+from uuid import UUID
+
 from rag.api.errors import ErrorEnvelope, ErrorOut
 from rag.api.schemas import build_query_state, mode_of
-from rag.domain.answer import GeneratedAnswer, QuoteResponse
+from rag.domain.answer import AnswerBlock, Claim, GeneratedAnswer, QuoteResponse
 from rag.domain.enums import AnswerMode, QueryStatus
 from rag.domain.query import EditionFilter
 from rag.domain.runs import AnswerRun
@@ -17,10 +19,15 @@ def _quote_response() -> QuoteResponse:
 
 
 def _generated_answer() -> GeneratedAnswer:
+    claim = Claim(
+        id="c1",
+        text="Resposta.",
+        evidence_ids=(UUID("11111111-1111-1111-1111-111111111111"),),
+    )
     return GeneratedAnswer(
-        answer_markdown="Resposta.",
-        claims=(),
-        limitations=(),
+        answer_markdown=claim.text,
+        blocks=(AnswerBlock(text=claim.text, claim_id="c1"),),
+        claims=(claim,),
         abstained=False,
         abstention_reason=None,
     )
@@ -77,12 +84,29 @@ def test_build_query_state_failed_carries_safe_error() -> None:
         status=QueryStatus.FAILED,
         error_code=ErrorCode.MODEL_TIMEOUT,
         error_message="Não foi possível concluir a consulta.",
+        request_id="req-123",
     )
     state = build_query_state(run)
     assert state.error is not None
     assert state.error.code == "MODEL_TIMEOUT"
     assert state.error.message
+    assert state.error.request_id == "req-123"
     assert state.result is None
+
+
+def test_build_query_state_failed_default_request_id_is_empty_when_unset() -> None:
+    from rag.domain.errors import ErrorCode
+
+    run = AnswerRun(
+        question_original="pergunta",
+        question_anonymized="pergunta",
+        explicit_filters=EditionFilter(),
+        status=QueryStatus.FAILED,
+        error_code=ErrorCode.INTERNAL_ERROR,
+    )
+    state = build_query_state(run)
+    assert state.error is not None
+    assert state.error.request_id == ""
 
 
 def test_error_envelope_shape() -> None:

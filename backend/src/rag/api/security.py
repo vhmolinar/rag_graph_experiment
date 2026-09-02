@@ -158,7 +158,13 @@ class SecurityHeadersMiddleware:
 
 
 class RateLimitMiddleware:
-    """Token bucket por IP (SPEC §14). Resposta 429 com `Retry-After`."""
+    """Token bucket por IP (SPEC §14). Resposta 429 com `Retry-After`.
+
+    Segurança operacional (revisão T14-03): os buckets não podem crescer sem
+    limite na memória. Buckets inativos expiram após `bucket_ttl_seconds` e a
+    cardinalidade é limitada a `max_buckets` — quando o limite é atingido, o
+    bucket menos recente é desalojado (LRU). O relógio é inyectável (`now`).
+    """
 
     def __init__(
         self,
@@ -167,19 +173,47 @@ class RateLimitMiddleware:
         rate_limit_per_minute: int,
         exempt_prefixes: tuple[str, ...] = ("/api/v1/health/",),
         now: Callable[[], float] | None = None,
+        bucket_ttl_seconds: float = 300.0,
+        max_buckets: int = 100_000,
     ) -> None:
         self.app = app
         self._refill = rate_limit_per_minute / 60.0
         self._capacity = float(rate_limit_per_minute)
         self._exempt_prefixes = exempt_prefixes
         self._now = now or time.monotonic
-        self._buckets: dict[str, TokenBucket] = {}
+        self._bucket_ttl = max(1.0, float(bucket_ttl_seconds))
+        self._max_buckets = max(1, int(max_buckets))
+        # valor: (TokenBucket, último acesso monotónico)
+        self._buckets: dict[str, tuple[TokenBucket, float]] = {}
+        self._last_prune = self._now()
 
-    def _bucket(self, key: str) -> TokenBucket:
-        bucket = self._buckets.get(key)
-        if bucket is None:
+    def _prune(self, now: float) -> None:
+        """Remove buckets inativos (periodicamente — máximo una vez por TTL)."""
+        if now - self._last_prune < self._bucket_ttl:
+            return
+        self._last_prune = now
+        for key in [
+            key
+            for key, (_, last_access) in self._buckets.items()
+            if now - last_access > self._bucket_ttl
+        ]:
+            self._buckets.pop(key, None)
+
+    def _evict_oldest(self) -> None:
+        """Desaloja o bucket menos recente quando a cardinalidade é atingida."""
+        oldest_key = min(self._buckets, key=lambda key: self._buckets[key][1])
+        self._buckets.pop(oldest_key, None)
+
+    def _bucket(self, key: str, now: float) -> TokenBucket:
+        entry = self._buckets.get(key)
+        if entry is None:
+            if len(self._buckets) >= self._max_buckets:
+                self._evict_oldest()
             bucket = TokenBucket(self._capacity, self._refill, now=self._now)
-            self._buckets[key] = bucket
+            self._buckets[key] = (bucket, now)
+            return bucket
+        bucket, _ = entry
+        self._buckets[key] = (bucket, now)
         return bucket
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -190,7 +224,9 @@ class RateLimitMiddleware:
             return await self.app(scope, receive, send)
         client = scope.get("client")
         key = client[0] if client else "unknown"
-        bucket = self._bucket(key)
+        now = self._now()
+        self._prune(now)
+        bucket = self._bucket(key, now)
         if bucket.consume():
             return await self.app(scope, receive, send)
         request_id = scope.get("state", {}).get("request_id", "desconhecido")
@@ -219,24 +255,30 @@ def install_security(
     settings: ApiSettings,
     *,
     now: Callable[[], float] | None = None,
+    bucket_ttl_seconds: float = 300.0,
+    max_buckets: int = 100_000,
 ) -> None:
     """Registra middlewares na ordem desejada.
 
-    Com `add_middleware`, o primeiro registrado fica mais externo (starlette
-    `build_middleware_stack` inverte a lista). Ordem desejada (externo→interno):
-    RequestId → SecurityHeaders → RateLimit → CORS. Assim a resposta 429 do
-    rate limiter recebe o `X-Request-ID` e os headers de segurança.
+    Em Starlette, `add_middleware()` insere no início da lista e
+    `build_middleware_stack()` inverte a lista ao empilhar: o ÚLTIMO
+    registrado fica mais externo na pilha. Para obter a ordem desejada
+    (externo→interno) RequestId → SecurityHeaders → CORS → RateLimit, os
+    middlewares são registrados na ordem inversa: `RateLimitMiddleware`
+    primeiro e `RequestIdMiddleware` por último.
+
+    CORS fica EXTERNO ao rate limiter (T14-R2-01): quando o limiter responde
+    429 diretamente, a resposta ainda atravessa `CORSMiddleware` — a origem
+    permitida do SPA pode ler o corpo e `Retry-After`. Request-ID e headers de
+    segurança continuam externos a CORS, cobrindo TODA resposta (429 incluida)
+    e o preflight OPTIONS (que CORS resolve antes de chegar ao limiter).
     """
-    app.add_middleware(
-        RequestIdMiddleware,
-    )
-    app.add_middleware(
-        SecurityHeadersMiddleware,
-    )
     app.add_middleware(
         RateLimitMiddleware,
         rate_limit_per_minute=settings.rate_limit_per_minute,
         now=now,
+        bucket_ttl_seconds=bucket_ttl_seconds,
+        max_buckets=max_buckets,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -246,4 +288,10 @@ def install_security(
         expose_headers=["Content-Range", "Accept-Ranges", "X-Request-ID"],
         allow_credentials=False,
         max_age=86400,
+    )
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+    )
+    app.add_middleware(
+        RequestIdMiddleware,
     )

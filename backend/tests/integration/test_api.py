@@ -18,6 +18,7 @@ saltados pelo marker `integration`.
 import asyncio
 import hashlib
 import io
+import json
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from builders import make_text_pdf
 from model_doubles import (
     ConceptEmbeddingProvider,
     FakeGeneratorProvider,
+    FakePlannerProvider,
     FakeRerankerProvider,
     FakeVerifierProvider,
     abstention_answer,
@@ -47,7 +49,7 @@ from rag.domain.answer import GeneratedAnswer, QuoteResponse
 from rag.domain.enums import AnswerMode, QueryStatus, SearchStrategy, SourceType
 from rag.domain.library import Edition, Page, Passage, Section, Work
 from rag.domain.providers import GenerationRequest
-from rag.domain.versions import ChunkingVersion, EmbeddingVersion, utcnow
+from rag.domain.versions import ChunkingVersion, utcnow
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.config import DatabaseSettings
 from rag.infrastructure.db import Database
@@ -132,10 +134,8 @@ async def _seed(db: Database, store: ArtifactStore) -> Corpus:
         chunking = await versions.get_or_create(
             ChunkingVersion(label="api-chunk", created_at=utcnow())
         )
-        embedding_version = await versions.get_or_create(
-            EmbeddingVersion(label="api-emb", model_name="m", dimensions=1024, created_at=utcnow())
-        )
         provider = ConceptEmbeddingProvider()
+        embedding_version = await versions.get_or_create(provider.embedding_version)
         passage_id = UUID("a0000000-0000-0000-0000-00000000cafe")
         await PassagesRepository(conn).create(
             Passage(
@@ -204,6 +204,9 @@ async def api(
     ) -> FastAPI:
         db = await _open_db()
         store = ArtifactStore(tmp_path / f"artifacts-{len(dbs)}")
+        # Por padrão o harness injeta um provedor de planejamento determinístico
+        # (FakePlannerProvider) — sem provedor real de modelo no ambiente de teste.
+        planner_provider = planner_provider or FakePlannerProvider()
         return create_app(
             db=db,
             store=store,
@@ -319,7 +322,13 @@ async def test_rate_limit_returns_429_with_retry_after(
         response = await client.get("/api/v1/works")
         assert response.status_code == 429
         assert response.headers["retry-after"]
-        assert response.json()["error"]["code"] == "RATE_LIMITED"
+        # Revisão T14-01: a 429 também atravessa request-ID e headers de segurança.
+        assert response.headers["x-request-id"]
+        assert response.headers["strict-transport-security"]
+        assert response.headers["content-security-policy"]
+        body = response.json()
+        assert body["error"]["code"] == "RATE_LIMITED"
+        assert body["error"]["request_id"] == response.headers["x-request-id"]
 
 
 async def test_internal_error_does_not_expose_details(
@@ -344,6 +353,72 @@ async def test_internal_error_does_not_expose_details(
         assert state.error.code == "INTERNAL_ERROR"
         assert leak_marker not in response.text
         assert "Traceback" not in state.error.message
+
+
+async def test_failed_query_error_request_id_is_correlatable(
+    api: tuple[FastAPI, BuildApp, ClientFor],
+) -> None:
+    """Revisão T14-02: o erro terminal persistido de uma falha de provedor
+    expõe o `request_id` da requisição que iniciou a consulta (correlacionável
+    ao log), não um ID vazio."""
+    _app, build, client_for = api
+
+    def _boom(request: GenerationRequest) -> GeneratedAnswer:
+        raise RuntimeError("falha de provedor de modelo")
+
+    generator = FakeGeneratorProvider(answer_factory=_boom)
+    custom_app = await build(generator_provider=generator)
+    await _seed(custom_app.state.deps.db, custom_app.state.deps.store)
+    client = await client_for(custom_app)
+    async with client:
+        created = await client.post(
+            "/api/v1/queries", json={"question": _QUERY, "answer_mode": "dissertative"}
+        )
+        assert created.status_code == 202
+        post_request_id = created.headers["x-request-id"]
+        assert post_request_id
+        query_id = UUID(created.json()["query_id"])
+        state = await _wait_terminal(client, query_id)
+        assert state.status is QueryStatus.FAILED
+        assert state.error is not None
+        assert state.error.request_id
+        assert state.error.request_id == post_request_id
+
+
+async def test_failed_query_sse_terminal_carries_request_id(
+    api: tuple[FastAPI, BuildApp, ClientFor],
+) -> None:
+    """Revisão T14-02: o evento SSE terminal de uma falha também carrega o
+    mesmo `request_id` correlacionável (não vazio)."""
+    _app, build, client_for = api
+
+    def _boom(request: GenerationRequest) -> GeneratedAnswer:
+        raise RuntimeError("falha de provedor de modelo")
+
+    generator = FakeGeneratorProvider(answer_factory=_boom)
+    custom_app = await build(generator_provider=generator)
+    await _seed(custom_app.state.deps.db, custom_app.state.deps.store)
+    client = await client_for(custom_app)
+    async with client:
+        created = await client.post(
+            "/api/v1/queries", json={"question": _QUERY, "answer_mode": "dissertative"}
+        )
+        assert created.status_code == 202
+        post_request_id = created.headers["x-request-id"]
+        query_id = UUID(created.json()["query_id"])
+        await _wait_terminal(client, query_id)  # o terminal já está publicado
+        data_events: list[str] = []
+        async with client.stream("GET", f"/api/v1/queries/{query_id}/events") as stream:
+            assert stream.status_code == 200
+            async for line in stream.aiter_lines():
+                if line.startswith("data: "):
+                    data_events.append(line.removeprefix("data: "))
+                if data_events:
+                    break
+        assert data_events
+        terminal = json.loads(data_events[0])
+        assert terminal["status"] == "failed"
+        assert terminal["error"]["request_id"] == post_request_id
 
 
 async def test_cancel_interrupts_work(api: tuple[FastAPI, BuildApp, ClientFor]) -> None:
@@ -441,30 +516,33 @@ async def test_source_range_requests(api: tuple[FastAPI, BuildApp, ClientFor]) -
 async def test_sse_stream_delivers_terminal_result(
     api: tuple[FastAPI, BuildApp, ClientFor],
 ) -> None:
-    _app, build, client_for = api
-    # Provedor bloqueante mantém a consulta em andamento enquanto o stream SSE
-    # se conecta — assim os eventos de estágio são recebidos (o broker não
-    # replaya eventos não-terminais a subscriptores tardos).
-    enter = asyncio.Event()
-    release = asyncio.Event()
-    custom_app = await build(embedding_provider=BlockingEmbeddingProvider(enter, release))
-    await _seed(custom_app.state.deps.db, custom_app.state.deps.store)
-    client = await client_for(custom_app)
+    """AC-18: `GET /queries/{id}/events` entrega o evento terminal `result`.
+
+    Nota sobre o transporte: com `httpx.ASGITransport`, `client.stream()` fica
+    disponível só quando a aplicação conclúu o corpo — a rota SSE encerra
+    sempre após publicar o terminal (subscriptor ativo ou replay de terminal),
+    então o corpo recebido contém o evento `result`. Os eventos de estágio
+    (`status`) são cobertos a nível do broker em `test_api_events.py`.
+    """
+    app, _build, client_for = api
+    await _seed(app.state.deps.db, app.state.deps.store)
+    client = await client_for(app)
     async with client:
         response = await _post_query(client, mode="quote")
+        assert response.status_code == 202
         query_id = UUID(response.json()["query_id"])
-        await asyncio.wait_for(enter.wait(), timeout=5.0)
-        received: list[str] = []
+        data_events: list[dict[str, object]] = []
         async with client.stream("GET", f"/api/v1/queries/{query_id}/events") as stream:
             assert stream.status_code == 200
-            release.set()
             async for line in stream.aiter_lines():
-                if line.startswith("event: "):
-                    received.append(line.removeprefix("event: "))
-                if "result" in received:
-                    break
-        assert "status" in received
-        assert "result" in received
+                if line.startswith("data: "):
+                    data_events.append(json.loads(line.removeprefix("data: ")))
+        assert data_events
+        # A rota encerra o stream DEPOIS de publicar o terminal: o último evento
+        # `data:` é sempre o `result` terminal (subscrição ativa ou replay).
+        terminal = data_events[-1]
+        assert terminal["query_id"] == str(query_id)
+        assert terminal["status"] == "succeeded"
 
 
 async def test_readiness_and_liveness(api: tuple[FastAPI, BuildApp, ClientFor]) -> None:

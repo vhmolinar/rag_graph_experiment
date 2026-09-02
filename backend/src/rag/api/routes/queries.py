@@ -13,6 +13,7 @@ from rag.api.query_runner import QueryExecutor
 from rag.api.schemas import QueryAccepted, QueryCancelled, QueryState, build_query_state
 from rag.domain.errors import ConflictError, NotFoundError
 from rag.domain.query import QueryRequest
+from rag.domain.runs import AnswerRun
 from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.sessions import SessionsRepository
 
@@ -33,15 +34,30 @@ def _deps(request: Request) -> AppDependencies:
 async def create_query(payload: QueryRequest, request: Request) -> QueryAccepted:
     deps = _deps(request)
     query_id = uuid4()
-    # Validação síncrona da sessão (4xx rápido; o executor revalida defensivo).
-    if payload.session_id is not None:
-        async with deps.db.connection() as conn:
-            if await SessionsRepository(conn).get(payload.session_id) is None:
-                raise NotFoundError(
-                    "Sessão não encontrada.",
-                    context={"session_id": str(payload.session_id)},
-                )
-    deps.registry.start(query_id, QueryExecutor(deps).run(query_id, payload))
+    request_id = str(getattr(request.state, "request_id", ""))
+    # O `AnswerRun` é criado SINCRONAMENTE (status `queued`) antes de devolver
+    # 202 — um `GET /queries/{id}` imediatamente subsequente nunca devolve 404
+    # (revisão T14: corrida do ciclo POST→GET). Validação síncrona da sessão
+    # (4xx rápido; a rota é a única autoridade da criação).
+    async with deps.db.connection() as conn:
+        if (
+            payload.session_id is not None
+            and await SessionsRepository(conn).get(payload.session_id) is None
+        ):
+            raise NotFoundError(
+                "Sessão não encontrada.",
+                context={"session_id": str(payload.session_id)},
+            )
+        run = AnswerRun(
+            id=query_id,
+            question_original=payload.question,
+            question_anonymized=payload.question,
+            explicit_filters=payload.explicit_filter(),
+            session_id=payload.session_id,
+            request_id=request_id,
+        )
+        await AnswerRunsRepository(conn).create(run)
+    deps.registry.start(query_id, QueryExecutor(deps).run(query_id, payload, run))
     deps.broker.publish(
         query_id,
         QueryEvent(

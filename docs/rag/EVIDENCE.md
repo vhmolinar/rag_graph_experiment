@@ -12,7 +12,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata`, `test_opening_origin_reproduces_text` (metadados citáveis e recomposição) e `test_quote_multipage_passage_reproduces_text` (passagem multipágina com início/fim de páginas, rótulos e offsets por página). T14: `test_api.py::test_source_range_requests` e `test_quote_flow_succeeds` contribuem com source range e citação via API. Falta o caminho passagem→leitor (T17). |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata`, `test_opening_origin_reproduces_text` (metadados citáveis e recomposição) e `test_quote_multipage_passage_reproduces_text` (passagem multipágina com início/fim de páginas, rótulos e offsets por página). T14: `test_api.py::test_source_range_requests` e `test_quote_flow_succeeds` contribuem com source range e citação via API (integração executada na revisão T14 via podman). Falta o caminho passagem→leitor (T17). |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
@@ -27,7 +27,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02/T03/T06/T11/T12 cobrem versões anteriores; T13: `test_dissertative_pipeline.py::test_versions_are_registered`, `test_same_policy_is_idempotent_version`, migration `0008_verification_policy_versions` e `test_dissertative.py::TestVersions`. Falta `AnswerRun` completo em T18. |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T14: logs JSON com request ID e handler sanitizado. Falta: traces (T18). |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
-| AC-18 | API com validação, CORS restrito, rate limiting, headers | ✅ | T14: `test_api_app.py`, `test_api_security.py`, `test_api_events.py`, `test_api_schemas.py` e `test_api.py` cobrem OpenAPI, validação, CORS, rate limit, headers, SSE, cancelamento, source ranges e health. |
+| AC-18 | API com validação, CORS restrito, rate limiting, headers | ✅ | T14: `test_api_app.py`, `test_api_security.py`, `test_api_events.py`, `test_api_schemas.py` e `test_api.py` cobrem OpenAPI, validação, CORS, rate limit, headers, SSE, cancelamento, source ranges e health. Correções das revisões T14 (REVIEW_T14.md) e T14 rodada 2 (REVIEW_T14_ROUND2.md): ordem real da pilha corrigida — a 429 atravessa `RequestId`, `SecurityHeaders` e `CORS` (testes compuestos `test_api_app.py::test_rate_limited_429_keeps_envelope_and_security_headers`/`test_rate_limited_429_serves_cors_to_allowed_origin`, este último exige `access-control-allow-origin` na 429; integração `test_api.py::test_rate_limit_returns_429_with_retry_after` exige `X-Request-ID` + headers na 429); buckets do rate limiter com TTL e cardinalidade limitada (`test_api_security.py::test_rate_limit_buckets_expire_after_ttl`, `test_rate_limit_buckets_are_recreated_after_ttl`, `test_rate_limit_caps_bucket_cardinality`); `request_id` do erro terminal persistido e SSE correlacionável (`test_api_schemas.py`, `test_api.py::test_failed_query_error_request_id_is_correlatable`, `test_failed_query_sse_terminal_carries_request_id`). |
 | AC-19 | Benchmark repetível, compara sem sobrescrever | ⬜ | T19 |
 | AC-20 | `docker compose up` funcional sem credenciais hardcoded | ⬜ | T20 |
 
@@ -1437,3 +1437,81 @@ Comandos finais executados em 2026-08-29 após as correções:
 | `make audit` | pip-audit: nenhuma vulnerabilidade; npm audit: 0 |
 | `make security-scan` | scanner estrutural: nenhum IOC bloqueado |
 | `make audit` ∥ `make test` (concorrente) | ambos OK |
+
+### T14 — API FastAPI e segurança ✅
+
+Implementação e revisão registradas em `docs/rag/NOTES.md` §§20–21 e
+`docs/rag/review_rounds/REVIEW_T14.md`, `REVIEW_T14_ROUND2.md`,
+`REVIEW_RESPONSE_T14.md` e `REVIEW_RESPONSE_T14_ROUND2.md`.
+
+Correções da revisão T14 (rodada 1) aplicadas em 2026-09-02:
+
+- **T14-01** (crítico) — a ordem real da pilha de middlewares de Starlette era
+  inversa à documentada: `RateLimitMiddleware` respondia 429 antes de
+  `RequestIdMiddleware` e `SecurityHeadersMiddleware`, sem `X-Request-ID` nem
+  headers de segurança. Corrigida a ordem de registro (o último registrado é o
+  mais externo) e acrescentados testos de aplicação composta
+  (`test_api_app.py::test_rate_limited_429_keeps_envelope_and_security_headers`,
+  `test_rate_limited_429_serves_cors_to_allowed_origin`) + integração
+  (`test_api.py::test_rate_limit_returns_429_with_retry_after` exige headers na
+  429).
+- **T14-02** (alta) — o erro terminal persistido de uma consulta falhada
+  expunha `request_id` vazio. `AnswerRun` agora persiste o `request_id` da
+  requisição que iniciou a consulta (migration `0010_answer_runs_request_id`);
+  `build_query_state` o devolve no estado e no evento SSE terminal. Testes:
+  `test_api_schemas.py` (projeção), `test_api.py::test_failed_query_error_request_id_is_correlatable`
+  e `test_failed_query_sse_terminal_carries_request_id` (integração, ID ==
+  `X-Request-ID` do POST).
+- **T14-03** (média) — `RateLimitMiddleware._buckets` crescia sem limite.
+  Acrescentados TTL (`bucket_ttl_seconds`) e limite de cardinalidade
+  (`max_buckets`, desalojo LRU) com relógio inyectável. Testes:
+  `test_api_security.py::test_rate_limit_buckets_expire_after_ttl`,
+  `test_rate_limit_buckets_are_recreated_after_ttl`,
+  `test_rate_limit_caps_bucket_cardinality`.
+
+Correções da rodada 2 (REVIEW_T14_ROUND2.md, 2026-09-02):
+
+- **T14-R2-01** (alto) — a 429 não era legível pelo SPA permitido: CORS ficava
+  INTERNO ao rate limiter na pilha. A pilha é agora
+  `RequestId → SecurityHeaders → CORS → RateLimit` (externo→interno): a
+  resposta 429 atravessa CORS e expõe `Access-Control-Allow-Origin` para a
+  origem permitida. O teste composto
+  (`test_api_app.py::test_rate_limited_429_serves_cors_to_allowed_origin`)
+  agora exige `access-control-allow-origin == http://localhost:5173` na 429;
+  o preflight OPTIONS é resolvido por CORS antes do limiter.
+
+Além dos achados da revisão, a integração (executada via podman, socket
+Docker-compatible) exigiu correções de rodada prévias fundidas no tronco:
+
+- cadeia de migrations linearizada: a revisão `0005` era duplicada
+  (`0005_enrichment_runs` de T11 vs `0005_answer_runs_error_message` de T14);
+  a migração do erro-message foi renumerada `0009` e a nova `request_id` é
+  `0010`;
+- `RetrievalService.retrieve` passou a exixir `run` e persiste candidatos e
+  versões: `QueryExecutor._retrieve` agora o injeta e recarrega o run
+  (latência append-only);
+- o `AnswerRun` de uma consulta é criado SINCRONAMENTE na rota `POST /queries`
+  (o ciclo POST→GET deixa de ter corrida de 404; risco residual assinalado na
+  revisão);
+- o harness de integração injeta `FakePlannerProvider` por padrão (sem
+  provedor real de modelo no ambiente) e usa a versão de embedding do provedor
+  no seed (a busca vetorial filtra por `embedding_version_id`).
+
+Comandos executados em 2026-09-02 (Linux, Python 3.12, uv 0.12.7; PostgreSQL
+17 via podman):
+
+| Comando | Resultado |
+|---------|-----------|
+| `make lint` | OK (ruff + eslint) |
+| `make format-check` | OK (ruff + prettier) |
+| `make typecheck` | OK (mypy 138 arquivos; tsc) |
+| `cd backend && uv run pytest tests/unit -q` | 611 passed, 3 skipped |
+| `cd backend && uv run pytest tests/contract -q` | 26 passed |
+| `make test-integration-podman` | 232 passed, 1 skipped (PostgreSQL real via testcontainers/podman) |
+| `make security-scan` | OK; nenhum IOC bloqueado |
+| `make lock` | OK |
+
+Limitações: Docker não está instalado neste ambiente; a integração foi
+executada via o socket Docker-compatible do Podman (`test-integration-podman`).
+Os testes de integração T14 dependem de testcontainers e não são executáveis
+sem um daemon de containers.

@@ -142,7 +142,7 @@ def build_query_state(run: AnswerRun) -> QueryState:
         error = ErrorOut(
             code=code.value,
             message=safe_message(code, run.error_message),
-            request_id="",
+            request_id=run.request_id,
         )
     return QueryState(
         query_id=run.id,

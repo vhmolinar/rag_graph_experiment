@@ -54,13 +54,14 @@ def _unopened_db() -> Database:
     )
 
 
-def _app() -> FastAPI:
+def _app(rate_limit_per_minute: int = 10000) -> FastAPI:
     store_root = Path(tempfile.mkdtemp(prefix="rag-api-test-artifacts-"))
     return create_app(
         db=_unopened_db(),
         store=ArtifactStore(store_root),
         settings=ApiSettings(
-            cors_allowed_origins="http://localhost:5173", rate_limit_per_minute=10000
+            cors_allowed_origins="http://localhost:5173",
+            rate_limit_per_minute=rate_limit_per_minute,
         ),
         embedding_provider=ConceptEmbeddingProvider(),
         reranker_provider=FakeRerankerProvider(),
@@ -148,6 +149,61 @@ async def test_cors_rejects_foreign_origin() -> None:
             headers={"Origin": "http://evil.example"},
         )
         assert response.headers.get("access-control-allow-origin") is None
+
+
+async def test_rate_limited_429_keeps_envelope_and_security_headers() -> None:
+    """Revisão T14-01: a pilha real de `create_app()` — não o middleware
+    isolado — deve dar a 429 o `X-Request-ID`, todos os headers de segurança
+    e um corpo com o MESMO ID do header (correlacionável)."""
+    app = _app(rate_limit_per_minute=2)
+    client = await _client_for(app)
+    async with client:
+        for _ in range(2):
+            response = await client.post("/api/v1/queries", json={"question": ""})
+            assert response.status_code == 422  # consuma os tokens
+        response = await client.post("/api/v1/queries", json={"question": ""})
+        assert response.status_code == 429
+        assert response.headers["retry-after"]
+        request_id = response.headers["x-request-id"]
+        assert request_id
+        assert response.headers["strict-transport-security"] == (
+            "max-age=31536000; includeSubDomains"
+        )
+        assert "default-src 'none'" in response.headers["content-security-policy"]
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["permissions-policy"]
+        body = response.json()
+        assert body["error"]["code"] == "RATE_LIMITED"
+        assert body["error"]["request_id"] == request_id
+
+
+async def test_rate_limited_429_serves_cors_to_allowed_origin() -> None:
+    """Revisão T14-R2-01: a resposta 429 de origem permitida deve expor
+    `Access-Control-Allow-Origin` — sem ele o navegador bloqueia a leitura do
+    corpo e de `Retry-After` pelo SPA configurado."""
+    app = _app(rate_limit_per_minute=1)
+    client = await _client_for(app)
+    async with client:
+        preflight = await client.options(
+            "/api/v1/works",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert preflight.headers.get("access-control-allow-origin") == "http://localhost:5173"
+        await client.get("/api/v1/works")  # consuma o único token
+        limited = await client.get(
+            "/api/v1/works",
+            headers={"Origin": "http://localhost:5173"},
+        )
+        assert limited.status_code == 429
+        assert limited.headers["x-request-id"]
+        assert limited.headers["strict-transport-security"]
+        assert limited.headers["content-security-policy"]
+        assert limited.headers.get("access-control-allow-origin") == "http://localhost:5173"
 
 
 async def test_error_response_never_leaks_internals() -> None:

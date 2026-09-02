@@ -191,6 +191,7 @@ class TestDeepImmutability:
             {"question_anonymized": "alterada"},
             {"explicit_filters": EditionFilter()},
             {"created_at": utcnow()},
+            {"request_id": "req-alterado"},
         ):
             with pytest.raises(InvalidTransitionError, match="não permitidos"):
                 run.transition(QueryStatus.RUNNING, **forbidden)

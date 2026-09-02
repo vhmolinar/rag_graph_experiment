@@ -123,6 +123,67 @@ async def test_rate_limit_exempts_health_prefix() -> None:
         assert (await client.get("/api/v1/works")).status_code == 429
 
 
+async def _asgi_call(app: Any, client_addr: str, path: str = "/x") -> list[dict[str, Any]]:
+    """Invoca o middleware directamente com um `client` específico — permite
+    exercitar vários buckets (IPs distintos) sem passar por um servidor."""
+    messages: list[dict[str, Any]] = []
+    scope: dict[str, Any] = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "client": (client_addr, 50000),
+        "state": {},
+    }
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await app(scope, receive, send)
+    return messages
+
+
+async def test_rate_limit_buckets_expire_after_ttl() -> None:
+    """T14-03: buckets inativos são coletados depois do TTL — a memória não
+    cresce permanentemente com IPs distintos."""
+    clock = FakeClock()
+    app = RateLimitMiddleware(
+        _ok_app, rate_limit_per_minute=100, now=clock, bucket_ttl_seconds=10.0
+    )
+    await _asgi_call(app, "10.0.0.1")
+    await _asgi_call(app, "10.0.0.2")
+    assert len(app._buckets) == 2
+    clock.advance(11.0)
+    await _asgi_call(app, "10.0.0.3")  # dispara a coleta periódica
+    assert len(app._buckets) == 1
+    assert "10.0.0.3" in app._buckets
+
+
+async def test_rate_limit_buckets_are_recreated_after_ttl() -> None:
+    """T14-03: após expirar, um IP anterior volta a ter bucket (limite novo)."""
+    clock = FakeClock()
+    app = RateLimitMiddleware(_ok_app, rate_limit_per_minute=1, now=clock, bucket_ttl_seconds=5.0)
+    await _asgi_call(app, "10.0.0.1")
+    assert (await _asgi_call(app, "10.0.0.1"))[0]["status"] == 429
+    clock.advance(6.0)
+    await _asgi_call(app, "10.0.0.2")  # dispara a coleta
+    assert (await _asgi_call(app, "10.0.0.1"))[0]["status"] == 200
+
+
+async def test_rate_limit_caps_bucket_cardinality() -> None:
+    """T14-03: com `max_buckets`, o bucket menos recente é desalojado — o
+    dicionário fica limitado em cardinalidade."""
+    clock = FakeClock()
+    app = RateLimitMiddleware(_ok_app, rate_limit_per_minute=100, now=clock, max_buckets=3)
+    for index in range(5):
+        await _asgi_call(app, f"10.0.0.{index}")
+    assert len(app._buckets) == 3
+    # os 2 menos recentes foram desalojados; restan os 3 últimos
+    assert set(app._buckets) == {"10.0.0.2", "10.0.0.3", "10.0.0.4"}
+
+
 async def test_security_headers_are_present() -> None:
     app = SecurityHeadersMiddleware(_ok_app)
     client = await _client_for(app)
