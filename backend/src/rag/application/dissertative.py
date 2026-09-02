@@ -62,14 +62,19 @@ _GENERATION_POLICY = (
 )
 
 _GENERATION_OUTPUT_CONTRACT = (
-    'Devolva um objeto JSON com "answer_markdown" (resposta em Markdown, '
-    'referenciando as evidências pelos seus IDs), "claims" (lista de objetos '
-    'com "id" (string), "text" (afirmação em português), "evidence_ids" (lista '
-    "de UUIDs EXACTAMENTE como informados; vazio se inference=true) e "
-    '"inference" (bool, marca afirmações inferidas sem suporte direto)), '
-    '"limitations" (lista de limitações da resposta, ex.: fonte única '
-    'consultada) e "abstained"/"abstention_reason" (abstenção se as evidências '
-    "não sustentarem resposta)."
+    'Devolva um objeto JSON com "answer_markdown" (resposta em Markdown), '
+    '"blocks" (lista de blocos cuja concatenação reproduz EXACTAMENTE '
+    'answer_markdown: cada bloco é um objeto com "text" (trecho exato do '
+    'Markdown) e "claim_id" (ID da afirmação se o trecho for a afirmação; '
+    "null para prosa conectiva/estructural)), "
+    '"claims" (lista de objetos com "id" (string), "text" (afirmação em '
+    'português; para blocos de afirmação, "text" deve ser IDÊNTICO ao do '
+    'bloco), "evidence_ids" (lista de UUIDs EXACTAMENTE como informados; '
+    'vazio se inference=true) e "inference" (bool, marca afirmações '
+    'inferidas sem suporte direto)), "limitations" (lista de limitações da '
+    'resposta, ex.: fonte única consultada) e "abstained"/"abstention_reason" '
+    "(abstenção se as evidências não sustentarem resposta; em abstenção, "
+    "answer_markdown deve ser vazio)."
 )
 
 _VERIFICATION_POLICY = (
@@ -163,8 +168,13 @@ class DissertativeService:
             answer = await self._generator.generate(request)
             result = await self._verify(answer, request, allowed_ids, budget, iteration, versions)
             if answer.abstained:
-                # Abstenção do gerador: nenhumas afirmações a verificar (NOTES.md §10.14 item 8).
-                return self._build_dissertative_answer(answer, result, versions)
+                # Abstenção do gerador: nenhumas afirmações a verificar
+                # (NOTES.md §10.14 item 8). T13-01: o serviço entrega SÓ a
+                # forma canônica — nenhuna prosa do gerador (nem o seu
+                # abstention_reason) atravessa o caminho de abstenção.
+                return self._build_dissertative_answer(
+                    _abstained_answer(_ABSTENTION_REASON), result, versions
+                )
             if self._acceptable(result):
                 final = self._ensure_comparative_limitation(answer, plan, packed)
                 return self._build_dissertative_answer(final, result, versions)

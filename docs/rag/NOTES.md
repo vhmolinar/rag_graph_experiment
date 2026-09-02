@@ -999,5 +999,41 @@ verificação), não bloqueantes; podem ser revistas pelo usuário.
    retorna `VerificationResult` vazio; abstenção por cobertura insuficiente é
    forçada pelo serviço.
 9. **Versões registradas:** prompts de geração/verificação, endpoints de
-   generator/verifier e política de verificação. `DissertativeAnswer` expõe os
-   IDs; a integração completa em `AnswerRun` pertence a T18.
+    generator/verifier e política de verificação. `DissertativeAnswer` expõe os
+    IDs; a integração completa em `AnswerRun` pertence a T18.
+
+## 16. Registro do implementador — 2026-09-02 (fase 1, correções de revisão T13)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T13.md`
+(T13-01 a T13-03), depois do usuário aprovar a via de correção de T13-03.
+Elas complementam o registro §15.
+
+1. **A abstenção NUNCA carrega prosa factual (T13-01, AC-10).** Em
+   `GeneratedAnswer`, uma resposta abstida exige `answer_markdown` vazio,
+   sem blocos e sem limitações — uma "abstenção" com Markdown não vazio é
+   rejeitada por construção (falha fechada no adapter via
+   `ModelResponseError`). Em `DissertativeService.answer`, quando o gerador
+   declara abstenção, o serviço substitui a saída pela forma canônica
+   (`_abstained_answer(_ABSTENTION_REASON)`): nem o `abstention_reason` do
+   gerador atravessa o caminho de abstenção.
+2. **Contradição sempre prevalece sobre `supported` (T13-02, AC-09).**
+   `assess_claims` tornou um par não sustentado quando o veredicto tem
+   `contradiction=true`, INDEPENDENTEMENTE de `supported`. Um veredicto
+   `supported=true, contradiction=true` (combinação permitida pelo schema)
+   já não mantém a afirmação factual: entra em `unsupported_claim_ids` e é
+   marcada como inferência no caminho de correção.
+3. **O Markdown entregue fica ligado às afirmações verificadas via blocos
+   (T13-03, AC-09).** `GeneratedAnswer` ganhou `blocks: tuple[AnswerBlock]`,
+   onde `AnswerBlock` é `text` + `claim_id` opcional. Invariantes:
+   `answer_markdown == concat(block.text)` (nenhuna prosa factual fora dos
+   blocos), cada bloco de afirmação corresponde verbatim a uma `Claim`, e
+   cada `Claim` aparece como bloco. A escolha entre as duas vias propostas
+   pela revisão (blocos/IDs vs. extração determinística) foi aprovada
+   explicitamente pelo usuário (blocos/IDs). Sem migration: `GeneratedAnswer`
+   é conteúdo JSONB de `answer_runs.response`, não coluna relacional.
+4. **Contrato de geração atualizado para exigir blocos.** O
+   `_GENERATION_OUTPUT_CONTRACT` do prompt dissertativo instrui o modelo a
+   devolver `blocks` cuja concatenação reproduz exactamente `answer_markdown`,
+   com `claim_id` para trechos que são afirmações. As respostas do gerador
+   continuam validadas como `GeneratedAnswer` (falha fechada se violar o
+   contrato).

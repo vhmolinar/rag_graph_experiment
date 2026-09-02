@@ -6,7 +6,7 @@ import psycopg
 import pytest
 from pydantic import ValidationError
 
-from rag.domain.answer import Claim, GeneratedAnswer, QuoteResponse, VerificationResult
+from rag.domain.answer import AnswerBlock, Claim, GeneratedAnswer, QuoteResponse, VerificationResult
 from rag.domain.enums import (
     ArtifactKind,
     IngestionStatus,
@@ -761,7 +761,7 @@ class TestAnswerRuns:
             finished = run.transition(QueryStatus.RUNNING).transition(
                 QueryStatus.ABSTAINED,
                 response=GeneratedAnswer(
-                    answer_markdown="O acervo não cobre o tema.",
+                    answer_markdown="",
                     abstained=True,
                     abstention_reason="sem evidências",
                 ),
@@ -776,11 +776,15 @@ class TestAnswerRuns:
     async def test_full_roundtrip_with_all_stages_and_versions(self, db: Database) -> None:
         """R09: candidatos dos 4 estágios, evidências e VersionSet completos (AC-06/15)."""
         passage_a, passage_b = uuid4(), uuid4()
+        claim = Claim(id="c1", text="Spleen é o tédio baudelairiano.", evidence_ids=(passage_a,))
+        blocks = (
+            AnswerBlock(text=claim.text, claim_id="c1"),
+            AnswerBlock(text=" [c1]"),
+        )
         response = GeneratedAnswer(
-            answer_markdown="Spleen é o tédio baudelairiano [c1].",
-            claims=(
-                Claim(id="c1", text="Spleen é o tédio baudelairiano.", evidence_ids=(passage_a,)),
-            ),
+            answer_markdown="".join(block.text for block in blocks),
+            blocks=blocks,
+            claims=(claim,),
             abstained=False,
         )
         run = AnswerRun(

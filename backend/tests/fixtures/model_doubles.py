@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from uuid import UUID
 
-from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
+from rag.domain.answer import AnswerBlock, Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.providers import (
     ClaimVerdict,
     ConceptExtractRequest,
@@ -178,9 +178,15 @@ class FakeGeneratorProvider:
 
 def _default_answer(request: GenerationRequest) -> GeneratedAnswer:
     first: EvidenceRef = request.evidences[0]
+    claim = Claim(id="c1", text="Afirmação de exemplo.", evidence_ids=(first.passage_id,))
+    blocks = (
+        AnswerBlock(text=f"Resposta com base em {len(request.evidences)} evidência(s). "),
+        AnswerBlock(text=claim.text, claim_id="c1"),
+    )
     return GeneratedAnswer(
-        answer_markdown=f"Resposta com base em {len(request.evidences)} evidência(s).",
-        claims=(Claim(id="c1", text="Afirmação de exemplo.", evidence_ids=(first.passage_id,)),),
+        answer_markdown="".join(block.text for block in blocks),
+        blocks=blocks,
+        claims=(claim,),
         limitations=(),
         abstained=False,
         abstention_reason=None,

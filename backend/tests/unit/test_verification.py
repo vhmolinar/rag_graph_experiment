@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from rag.domain.answer import Claim, Contradiction, GeneratedAnswer
+from rag.domain.answer import AnswerBlock, Claim, Contradiction, GeneratedAnswer
 from rag.domain.enums import Depth
 from rag.domain.providers import ClaimVerdict
 from rag.domain.verification import (
@@ -136,6 +136,24 @@ class TestAssessClaims:
             ),
         )
 
+    def test_contradiction_marks_unsupported_even_when_supported_true(self) -> None:
+        """T13-02: um veredicto `supported=true, contradiction=true` NUNCA
+        mantém a afirmação factual — a contradição sempre prevalece (AC-09)."""
+        evidence_id = uuid4()
+        claims = (Claim(id="c1", text="A.", evidence_ids=(evidence_id,)),)
+        verdicts = (
+            ClaimVerdict(
+                claim_id="c1",
+                evidence_id=evidence_id,
+                supported=True,
+                contradiction=True,
+                detail="A fonte contradice a afirmação.",
+            ),
+        )
+        assessments = assess_claims(claims, verdicts)
+        assert not assessments[0].supported
+        assert len(assessments[0].contradictions) == 1
+
     def test_all_evidence_pairs_must_be_supported(self) -> None:
         first = uuid4()
         second = uuid4()
@@ -161,12 +179,17 @@ class TestAssessClaims:
 class TestMarkUnsupportedAsInference:
     def _answer(self) -> GeneratedAnswer:
         evidence_id = uuid4()
+        c1 = Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,))
+        c2 = Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,))
+        blocks = (
+            AnswerBlock(text=c1.text, claim_id="c1"),
+            AnswerBlock(text=" "),
+            AnswerBlock(text=c2.text, claim_id="c2"),
+        )
         return GeneratedAnswer(
-            answer_markdown="Resposta de teste.",
-            claims=(
-                Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
-                Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
-            ),
+            answer_markdown="".join(block.text for block in blocks),
+            blocks=blocks,
+            claims=(c1, c2),
             limitations=(),
             abstained=False,
             abstention_reason=None,

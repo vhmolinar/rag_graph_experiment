@@ -18,8 +18,8 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
 | AC-07 | Exclusão de obra vale em todos os estágios | ✅ | T02/T08/T09/T10 cobrem filtros desde o plano até o reranker; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` prova que a exclusão aplicada na recuperação flui à geração, que recebe somente evidências permitidas. |
 | AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem prosa); T12: `test_context.py::TestQuoteContract`, `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` e `test_quote_has_no_generation_path` (verificação estrutural T12-03: nem `quote` nem `assemble` aceitam provedor de geração). |
-| AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ✅ | T02: `test_answer.py::TestClaim`; T13: `test_dissertative_pipeline.py::test_unsupported_claim_is_marked_as_inference`, `test_dissertative.py::TestUnsupportedClaims` e `test_verification.py::TestMarkUnsupportedAsInference`. |
-| AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer`; T13: `test_dissertative_pipeline.py::test_question_without_support_abstains`, `TestGeneratorAbstention` e `TestUnsupportedClaims::test_low_coverage_forces_abstention`. |
+| AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ✅ | T02: `test_answer.py::TestClaim`; T13: `test_dissertative_pipeline.py::test_unsupported_claim_is_marked_as_inference`, `test_dissertative.py::TestUnsupportedClaims` e `test_verification.py::TestMarkUnsupportedAsInference`; correções da revisão T13: contradição sempre prevalece sobre `supported` (T13-02: `test_verification.py::test_contradiction_marks_unsupported_even_when_supported_true`, `test_dissertative.py::test_contradiction_with_supported_true_marks_inference`) e Markdown entregue ligado às claims via `blocks` (T13-03: `test_answer.py::TestGeneratedAnswer`, `test_dissertative.py::TestAnswerMarkdownBinding`). |
+| AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer`; T13: `test_dissertative_pipeline.py::test_question_without_support_abstains`, `TestGeneratorAbstention` e `TestUnsupportedClaims::test_low_coverage_forces_abstention`; T13-01: abstenção NUNCA carrega prosa — Markdown vazio, sem blocos/limitações (`test_answer.py::TestGeneratedAnswer::test_abstained_answer_cannot_have_text/limitations/blocks`) e substituição canônica no serviço (`test_dissertative.py::test_generator_abstention_is_replaced_with_canonical`). |
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10/T12 cobrem diversidade adaptativa sem quota cega; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` e `test_dissertative.py::TestComparativeLimitation` cobrem declaração determinística com fonte única. |
 | AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts`, `test_summary_without_support_is_rejected`, `test_summaries_never_serve_as_citations`, `test_concept_leads_to_original_passages`, `test_two_reindexations_never_use_inactive_passages`, `test_enrichment.py::TestValidatedSupports`, `test_cli.py::TestEnrichCommand`; T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable`. |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
@@ -1185,6 +1185,65 @@ geração (T13) exigirá um teste de spy real sobre o fluxo completo; o
 `concept_evidence` usado pela diversificação por conceito é o conjunto
 extraído em T11 (a associação é rastreável no banco, não é exposta no
 contrato `QuoteResponse`).
+
+### T13 — Geração dissertativa e verificação ✅
+
+Entregáveis em `backend/src/rag/domain/answer.py`, `domain/verification.py`,
+`application/dissertative.py`, `adapters/verifier_adapter.py` e
+`tests/fixtures/model_doubles.py`: prompt estruturado com evidências
+numeradas; políticas brief/standard/deep; schema `GeneratedAnswer` com
+`blocks` (T13-03); verificação de existência e suporte de citações; detecção
+de contradição (T13-02); correção/regeneração com limite; abstenção canônica
+(T13-01).
+
+Correções da revisão T13 (`docs/rag/review_rounds/REVIEW_T13.md`, T13-01 a
+T13-03), com a via de T13-03 aprovada pelo usuário:
+
+- **T13-01 (crítico)** — a abstenção do gerador NUNCA entrega prosa factual
+  arbitrária: `GeneratedAnswer` rejeita `abstained=true` com `answer_markdown`
+  não vazio, blocos ou limitações; `DissertativeService.answer` substitui a
+  saída do gerador pela abstenção canônica
+  (`_abstained_answer(_ABSTENTION_REASON)`). Evidência:
+  `test_answer.py::test_abstained_answer_cannot_have_text/limitations/blocks`,
+  `test_dissertative.py::test_generator_abstention_is_replaced_with_canonical`.
+- **T13-02 (alto)** — um veredicto `supported=true, contradiction=true` NUNCA
+  mantém a afirmação factual: `assess_claims` torna o par não sustentado
+  sempre que há contradição, e o caminho de correção marca a afirmação como
+  inferência. Evidência:
+  `test_verification.py::test_contradiction_marks_unsupported_even_when_supported_true`,
+  `test_dissertative.py::test_contradiction_with_supported_true_marks_inference`.
+- **T13-03 (alto)** — o Markdown entregue fica ligado às afirmações
+  verificadas: `GeneratedAnswer.blocks` com invariantes `answer_markdown ==
+  concat(block.text)`, bloco de afirmação verbatim e cada claim presente como
+  bloco. Evidência: `test_answer.py::TestGeneratedAnswer` (blocos requeridos,
+  concatenação, claim inexistente, texto não correspondente, claim sem bloco,
+  afirmação extra no Markdown rejeitada) e
+  `test_dissertative.py::TestAnswerMarkdownBinding` (o caminho de correção
+  preserva a ligação).
+
+Comandos executados em 2026-09-02 (Linux; Python 3.12.14; PostgreSQL real via
+testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
+`TESTCONTAINERS_RYUK_DISABLED=true`):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK — All checks passed |
+| `uv run ruff format --check src tests` | OK — 116 arquivos |
+| `uv run mypy src tests` | OK — 116 arquivos, strict, 0 issues |
+| `uv run pytest tests/unit -q` | OK — 558 passed, 3 skipped (e2e opcionais) |
+| `uv run pytest tests/integration/test_dissertative_pipeline.py -q` | OK — 7 passed (PostgreSQL real) |
+| `uv run pytest tests/integration -q` | OK — 218 passed, 1 skipped (PostgreSQL real) |
+
+Critérios: AC-09 (afirmação factual exige evidência ou marcação; contradição
+prevalece; Markdown ligado às claims); AC-10 (abstenção sem prosa — canônica);
+AC-11 (limitação determinística para comparativas com fonte única); AC-14
+(timeout do verificador falha fechado — `VerificationError`); AC-15 (versões
+de prompts, endpoints e política de verificação registradas idempotentes).
+
+Limitações conhecidas: a integração `AnswerRun` completa (rastreabilidade
+ponta a ponta) pertence a T18; o bloque da abstenção canônica significa que a
+razão exata do gerador não atravessa — o cliente recebe a razão canônica
+(escolha deliberada de T13-01).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

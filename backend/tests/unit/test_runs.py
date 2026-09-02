@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from rag.domain.answer import Claim, GeneratedAnswer, QuoteResponse
+from rag.domain.answer import AnswerBlock, Claim, GeneratedAnswer, QuoteResponse
 from rag.domain.enums import QueryStatus, RankingStage
 from rag.domain.errors import ErrorCode, InvalidTransitionError
 from rag.domain.query import EditionFilter
@@ -57,7 +57,7 @@ class TestAnswerRun:
         run = _run(
             status=QueryStatus.ABSTAINED,
             response=GeneratedAnswer(
-                answer_markdown="O acervo não cobre.",
+                answer_markdown="",
                 abstained=True,
                 abstention_reason="sem suporte",
             ),
@@ -131,9 +131,7 @@ class TestTransitions:
             running.transition(QueryStatus.ABSTAINED, response=QuoteResponse())
         ok = running.transition(
             QueryStatus.ABSTAINED,
-            response=GeneratedAnswer(
-                answer_markdown="Sem suporte.", abstained=True, abstention_reason="x"
-            ),
+            response=GeneratedAnswer(answer_markdown="", abstained=True, abstention_reason="x"),
         )
         assert ok.status is QueryStatus.ABSTAINED
 
@@ -169,9 +167,15 @@ class TestDeepImmutability:
             run.versions.prompt_version_ids.append(uuid4())  # type: ignore[attr-defined]
 
     def test_nested_response_is_frozen(self) -> None:
+        claim = Claim(id="c1", text="afirmação", evidence_ids=(uuid4(),))
+        blocks = (
+            AnswerBlock(text=claim.text, claim_id="c1"),
+            AnswerBlock(text=" [c1]"),
+        )
         response = GeneratedAnswer(
-            answer_markdown="texto [c1]",
-            claims=(Claim(id="c1", text="afirmação", evidence_ids=(uuid4(),)),),
+            answer_markdown="".join(block.text for block in blocks),
+            blocks=blocks,
+            claims=(claim,),
             abstained=False,
         )
         with pytest.raises(ValidationError):

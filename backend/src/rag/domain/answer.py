@@ -4,7 +4,13 @@ Garantias estruturais:
 - `QuoteResponse` não possui nenhum campo de prosa — só trechos literais e
   metadados (AC-08). Síntese é impossível por construção de tipo.
 - `Claim` factual exige ao menos uma evidência; inferências são marcadas (AC-09).
-- Abstenção exige razão e não carrega afirmações (AC-10).
+- Abstenção exige razão e não carrega texto, afirmações, blocos nem limitações
+  (AC-10).
+- `GeneratedAnswer` liga o texto visível (`answer_markdown`) às afirmações
+  verificadas via `blocks` (T13-03): a concatenação dos blocos reproduz o
+  Markdown exatamente, cada bloco de afirmação corresponde verbatim à uma
+  afirmação e cada afirmação aparece como bloco — nenhuna prosa factual pode
+  atravessar o caminho de verificação sem estar ligada a uma `Claim`.
 """
 
 from typing import Self
@@ -30,12 +36,29 @@ class Claim(BaseModel):
         return self
 
 
+class AnswerBlock(BaseModel):
+    """Bloco que compõe `answer_markdown` (T13-03).
+
+    A resposta dissertativa é uma sequência de blocos cuja concatenação
+    reproduz EXACTAMENTE `answer_markdown`. Cada bloco ou é prosa conectiva/
+    estructural (`claim_id` nulo) ou é uma afirmação verificada (`claim_id`
+    referencia a `claims`, com `text` idêntico ao da afirmação). A cobertura
+    completa é validada em `GeneratedAnswer._blocks_cover_answer_markdown`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(min_length=1)
+    claim_id: str | None = None
+
+
 class GeneratedAnswer(BaseModel):
     """Resposta dissertativa. Frozen com coleções imutáveis (RR02)."""
 
     model_config = ConfigDict(frozen=True)
 
     answer_markdown: str
+    blocks: tuple[AnswerBlock, ...] = Field(default_factory=tuple, max_length=500)
     claims: tuple[Claim, ...] = Field(default_factory=tuple, max_length=200)
     limitations: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     abstained: bool
@@ -48,11 +71,50 @@ class GeneratedAnswer(BaseModel):
                 raise ValueError("abstenção exige abstention_reason (AC-10)")
             if self.claims:
                 raise ValueError("resposta abstida não pode conter afirmações")
+            if self.blocks:
+                raise ValueError("resposta abstida não pode conter blocos")
+            if self.limitations:
+                raise ValueError("resposta abstida não pode conter limitações")
+            if self.answer_markdown.strip():
+                # T13-01: a abstenção NUNCA carrega prosa factual arbitrária.
+                raise ValueError("resposta abstida não pode conter texto (AC-10)")
         elif self.abstention_reason is not None:
             raise ValueError("abstention_reason só é permitido quando abstained=true")
         ids = [c.id for c in self.claims]
         if len(ids) != len(set(ids)):
             raise ValueError("ids de afirmações devem ser únicos")
+        return self
+
+    @model_validator(mode="after")
+    def _blocks_cover_answer_markdown(self) -> Self:
+        """T13-03: o texto visível fica ligado às afirmações verificadas.
+
+        - a concatenação dos blocos reproduz `answer_markdown` (nenhuna prosa
+          factual pode existir fora dos blocos — falha fechada);
+        - cada bloco de afirmação corresponde verbatim à uma `Claim`;
+        - cada `Claim` aparece como bloco (nenhuna afirmação verificada fica
+          invisível no texto entregue).
+        """
+        if self.abstained:
+            return self
+        if not self.blocks:
+            raise ValueError("resposta dissertativa exige blocos que cubram o Markdown (T13-03)")
+        if "".join(block.text for block in self.blocks) != self.answer_markdown:
+            raise ValueError("answer_markdown deve ser a concatenação dos blocos (T13-03)")
+        claim_by_id = {claim.id: claim for claim in self.claims}
+        referenced: set[str] = set()
+        for block in self.blocks:
+            if block.claim_id is None:
+                continue
+            claim = claim_by_id.get(block.claim_id)
+            if claim is None:
+                raise ValueError(f"bloco referencia a afirmação inexistente: {block.claim_id}")
+            if block.text != claim.text:
+                raise ValueError("bloco de afirmação deve corresponder ao texto da afirmação")
+            referenced.add(block.claim_id)
+        missing = {claim.id for claim in self.claims} - referenced
+        if missing:
+            raise ValueError("cada afirmação deve aparecer no Markdown como bloco (T13-03)")
         return self
 
 

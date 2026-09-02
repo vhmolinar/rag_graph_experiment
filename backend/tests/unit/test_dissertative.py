@@ -20,14 +20,20 @@ from model_doubles import FakeGeneratorProvider, FakeVerifierProvider, verdict_f
 from psycopg import AsyncConnection
 
 from rag.application.dissertative import (
+    _ABSTENTION_REASON,
     DissertativeService,
     _RegisteredVersions,
 )
-from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
+from rag.domain.answer import AnswerBlock, Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.context import ContextEvidence, PackedContext
 from rag.domain.enums import Depth, Intent, SearchStrategy, VerificationAction
 from rag.domain.errors import VerificationError
-from rag.domain.providers import GenerationRequest
+from rag.domain.providers import (
+    ClaimVerdict,
+    GenerationRequest,
+    VerificationRequest,
+    VerificationVerdict,
+)
 from rag.domain.query import LexicalQuery, QueryPlan, StrategyExplanation
 from rag.domain.verification import VerificationBudget, VerificationPolicy
 
@@ -110,9 +116,15 @@ def _answer(
     claim_id: str = "c1",
     text: str = "Afirmação sustentada.",
 ) -> GeneratedAnswer:
+    claim = Claim(id=claim_id, text=text, evidence_ids=(evidence_id,))
+    blocks = (
+        AnswerBlock(text="Resposta de teste em Markdown: "),
+        AnswerBlock(text=claim.text, claim_id=claim.id),
+    )
     return GeneratedAnswer(
-        answer_markdown="Resposta de teste em Markdown.",
-        claims=(Claim(id=claim_id, text=text, evidence_ids=(evidence_id,)),),
+        answer_markdown="".join(block.text for block in blocks),
+        blocks=blocks,
+        claims=(claim,),
         limitations=(),
         abstained=False,
         abstention_reason=None,
@@ -202,6 +214,37 @@ class TestGeneratorAbstention:
         assert outcome.verification.action is VerificationAction.ACCEPTED
         assert verifier.requests == []  # nenhuna chamada ao verificador
 
+    async def test_generator_abstention_is_replaced_with_canonical(
+        self, service: DissertativeService
+    ) -> None:
+        """T13-01: o serviço substitui a abstenção do gerador pela forma
+        canônica — nenhuna prosa nem razão arbitrária do gerador atravessa o
+        caminho de abstenção."""
+        packed = _packed()
+        generator = cast(FakeGeneratorProvider, service._generator)
+        generator._answer_factory = lambda _request: GeneratedAnswer(
+            answer_markdown="",
+            claims=(),
+            limitations=(),
+            abstained=True,
+            abstention_reason="motivo arbitrário do gerador.",
+        )
+        outcome = await service.answer(
+            _conn(),
+            question="Pergunta?",
+            session_context=None,
+            depth=Depth.STANDARD,
+            plan=_plan(),
+            packed=packed,
+            verification_policy=_verification_policy(),
+            model_name="test-model",
+        )
+        assert outcome.answer.abstained
+        assert outcome.answer.abstention_reason == _ABSTENTION_REASON
+        assert outcome.answer.answer_markdown == ""
+        assert outcome.answer.claims == ()
+        assert outcome.answer.blocks == ()
+
 
 class TestInvalidCitations:
     async def test_invalid_id_triggers_regeneration_with_feedback(
@@ -267,7 +310,13 @@ class TestUnsupportedClaims:
         evidence_id = packed.evidences[0].evidence.passage_id
         generator = cast(FakeGeneratorProvider, service._generator)
         generator._answer_factory = lambda _request: GeneratedAnswer(
-            answer_markdown="Resposta de teste.",
+            answer_markdown="Resposta de teste: Sustentada. Não sustentada.",
+            blocks=(
+                AnswerBlock(text="Resposta de teste: "),
+                AnswerBlock(text="Sustentada.", claim_id="c1"),
+                AnswerBlock(text=" "),
+                AnswerBlock(text="Não sustentada.", claim_id="c2"),
+            ),
             claims=(
                 Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
                 Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
@@ -301,7 +350,13 @@ class TestUnsupportedClaims:
         evidence_id = packed.evidences[0].evidence.passage_id
         generator = cast(FakeGeneratorProvider, service._generator)
         generator._answer_factory = lambda _request: GeneratedAnswer(
-            answer_markdown="Resposta de teste.",
+            answer_markdown="Resposta de teste: Sustentada. Não sustentada.",
+            blocks=(
+                AnswerBlock(text="Resposta de teste: "),
+                AnswerBlock(text="Sustentada.", claim_id="c1"),
+                AnswerBlock(text=" "),
+                AnswerBlock(text="Não sustentada.", claim_id="c2"),
+            ),
             claims=(
                 Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
                 Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
@@ -353,6 +408,95 @@ class TestUnsupportedClaims:
         assert outcome.verification.contradictions[0].claim_id == "c1"
         assert outcome.verification.action is VerificationAction.CORRECTED
         assert outcome.answer.claims[0].inference is True
+
+    async def test_contradiction_with_supported_true_marks_inference(
+        self, service: DissertativeService
+    ) -> None:
+        """T13-02: um veredicto `supported=true, contradiction=true` NUNCA
+        libera a afirmação como factual — a contradição prevalece e a afirmação
+        é marcada como inferência (CORRECTED)."""
+        packed = _packed()
+        evidence_id = packed.evidences[0].evidence.passage_id
+        generator = cast(FakeGeneratorProvider, service._generator)
+        generator._answer_factory = lambda _request: _answer(evidence_id)
+
+        def _supported_contradiction(request: VerificationRequest) -> VerificationVerdict:
+            return VerificationVerdict(
+                verdicts=(
+                    ClaimVerdict(
+                        claim_id="c1",
+                        evidence_id=evidence_id,
+                        supported=True,
+                        contradiction=True,
+                        detail="A fonte contradice a afirmação.",
+                    ),
+                )
+            )
+
+        verifier = cast(FakeVerifierProvider, service._verifier)
+        verifier._verdict_factory = _supported_contradiction
+
+        outcome = await service.answer(
+            _conn(),
+            question="Pergunta?",
+            session_context=None,
+            depth=Depth.STANDARD,
+            plan=_plan(),
+            packed=packed,
+            verification_policy=_verification_policy(max_iterations=0, support_threshold=0.0),
+            model_name="test-model",
+        )
+        assert outcome.verification.contradictions
+        assert outcome.verification.supported_claims == 0
+        assert outcome.verification.unsupported_claim_ids == ("c1",)
+        assert outcome.answer.claims[0].inference is True
+
+
+class TestAnswerMarkdownBinding:
+    async def test_corrected_answer_keeps_markdown_bound_to_claims(
+        self, service: DissertativeService
+    ) -> None:
+        """T13-03: no caminho de correção, o Markdown entregue continua ligado
+        às afirmações — blocos cubrem o Markdown e correspondem verbatim às
+        claims (a resposta corrigida continua validável)."""
+        packed = _packed()
+        evidence_id = packed.evidences[0].evidence.passage_id
+        generator = cast(FakeGeneratorProvider, service._generator)
+        generator._answer_factory = lambda _request: GeneratedAnswer(
+            answer_markdown="Sustentada. Não sustentada.",
+            blocks=(
+                AnswerBlock(text="Sustentada.", claim_id="c1"),
+                AnswerBlock(text=" "),
+                AnswerBlock(text="Não sustentada.", claim_id="c2"),
+            ),
+            claims=(
+                Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
+                Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
+            ),
+            limitations=(),
+            abstained=False,
+            abstention_reason=None,
+        )
+        verifier = cast(FakeVerifierProvider, service._verifier)
+        verifier._verdict_factory = verdict_factory(unsupported={("c2", evidence_id)})
+
+        outcome = await service.answer(
+            _conn(),
+            question="Pergunta?",
+            session_context=None,
+            depth=Depth.STANDARD,
+            plan=_plan(),
+            packed=packed,
+            verification_policy=_verification_policy(max_iterations=0, support_threshold=0.5),
+            model_name="test-model",
+        )
+        assert outcome.verification.action is VerificationAction.CORRECTED
+        delivered = outcome.answer
+        assert "".join(block.text for block in delivered.blocks) == delivered.answer_markdown
+        claim_by_id = {claim.id: claim for claim in delivered.claims}
+        for block in delivered.blocks:
+            if block.claim_id is not None:
+                assert claim_by_id[block.claim_id].text == block.text
 
 
 class TestVerifierFailure:

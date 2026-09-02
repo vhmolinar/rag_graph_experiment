@@ -126,7 +126,11 @@ class TestGenerate:
     async def test_parses_generated_answer(self) -> None:
         request = _request()
         answer_payload = {
-            "answer_markdown": "Resposta.",
+            "answer_markdown": "Resposta. Afirmação.",
+            "blocks": [
+                {"text": "Resposta. ", "claim_id": None},
+                {"text": "Afirmação.", "claim_id": "c1"},
+            ],
             "claims": [
                 {
                     "id": "c1",
@@ -147,7 +151,8 @@ class TestGenerate:
             result = await provider.generate(request)
         finally:
             await provider.aclose()
-        assert result.answer_markdown == "Resposta."
+        assert result.answer_markdown == "Resposta. Afirmação."
+        assert result.blocks[1].claim_id == "c1"
         assert result.claims[0].evidence_ids == (request.evidences[0].passage_id,)
         sent_body = json.loads(route.calls.last.request.content)
         assert sent_body["model"] == "qwen3-instruct"
@@ -159,7 +164,7 @@ class TestGenerate:
     @respx.mock
     async def test_sends_bearer_auth(self) -> None:
         answer_payload = {
-            "answer_markdown": "x",
+            "answer_markdown": "",
             "claims": [],
             "limitations": [],
             "abstained": True,
@@ -180,7 +185,7 @@ class TestGenerate:
     @respx.mock
     async def test_deep_depth_uses_longer_timeout(self) -> None:
         answer_payload = {
-            "answer_markdown": "x",
+            "answer_markdown": "",
             "claims": [],
             "limitations": [],
             "abstained": True,

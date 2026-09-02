@@ -38,7 +38,7 @@ class FakeReranker:
 class FakeGenerator:
     async def generate(self, request: GenerationRequest) -> GeneratedAnswer:
         return GeneratedAnswer(
-            answer_markdown="resposta",
+            answer_markdown="",
             abstained=True,
             abstention_reason="fake",
         )

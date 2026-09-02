@@ -148,11 +148,16 @@ def assess_claims(
     """Agrega os veredictos do provedor por afirmação (SPEC §9.4).
 
     Uma afirmação é sustentada SÓ quando todas as suas evidências citadas
-    estão cobertas por um veredicto 'supported' sem contradição. Pairs
+    estão cobertas por um veredicto 'supported' SEM contradição. Pairs
     ausentes do veredicto são tratados como não sustentados (conservador,
     falha fechada — o provedor não pode omitir silenciosamente um juízo);
     veredictos para pares não informados (afirmação/evidência inexistentes)
     são ignorados defensivamente (NOTES.md §10.14 item 3).
+
+    T13-02: uma contradição torna o par/afirmação NÃO sustentado
+    INDEPENDENTEMENTE do valor de `supported` — um veredicto
+    `supported=true, contradiction=true` (combinação permitida pelo schema)
+    não pode manter a afirmação factual (AC-09).
     """
     by_pair: dict[tuple[str, UUID], ClaimVerdict] = {
         (verdict.claim_id, verdict.evidence_id): verdict for verdict in verdicts
@@ -163,7 +168,7 @@ def assess_claims(
         supported = True
         for evidence_id in claim.evidence_ids:
             verdict = by_pair.get((claim.id, evidence_id))
-            if verdict is None or not verdict.supported:
+            if verdict is None or not verdict.supported or verdict.contradiction:
                 supported = False
             if verdict is not None and verdict.contradiction:
                 contradictions.append(

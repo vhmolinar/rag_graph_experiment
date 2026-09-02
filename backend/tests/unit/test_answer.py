@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.domain.answer import (
+    AnswerBlock,
     Claim,
     Contradiction,
     EvidenceRef,
@@ -74,13 +75,101 @@ class TestGeneratedAnswer:
             )
 
     def test_valid_answer(self) -> None:
+        claim = Claim(id="c1", text="Spleen é tédio", evidence_ids=(uuid4(),))
+        blocks = (
+            AnswerBlock(text=claim.text, claim_id="c1"),
+            AnswerBlock(text=" — verificação.", claim_id=None),
+        )
         answer = GeneratedAnswer(
-            answer_markdown="Spleen é ... [1]",
+            answer_markdown="".join(block.text for block in blocks),
+            blocks=blocks,
             abstained=False,
-            claims=(Claim(id="c1", text="Spleen é tédio", evidence_ids=(uuid4(),)),),
+            claims=(claim,),
             limitations=("apenas uma obra consultada",),
         )
         assert not answer.abstained
+
+    # --- T13-01: a abstenção NUNCA carrega prosa factual arbitrária (AC-10) ---
+
+    def test_abstained_answer_cannot_have_text(self) -> None:
+        with pytest.raises(ValidationError, match="texto"):
+            GeneratedAnswer(
+                answer_markdown="Fato inventado apresentado ao usuário.",
+                abstained=True,
+                abstention_reason="Sem suporte.",
+            )
+
+    def test_abstained_answer_cannot_have_limitations(self) -> None:
+        with pytest.raises(ValidationError, match="limitações"):
+            GeneratedAnswer(
+                answer_markdown="",
+                abstained=True,
+                abstention_reason="Sem suporte.",
+                limitations=("fonte única",),
+            )
+
+    def test_abstained_answer_cannot_have_blocks(self) -> None:
+        with pytest.raises(ValidationError, match="blocos"):
+            GeneratedAnswer(
+                answer_markdown="",
+                abstained=True,
+                abstention_reason="Sem suporte.",
+                blocks=(AnswerBlock(text="prosa"),),
+            )
+
+    # --- T13-03: o Markdown entregue fica ligado às afirmações verificadas ---
+
+    def test_answer_requires_blocks_covering_markdown(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="blocos"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada.",
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_markdown_must_equal_concatenation_of_blocks(self) -> None:
+        """T13-03: texto do Markdown fora dos blocos é rejeitado (falha
+        fechada) — uma afirmação factual extra não listada não pode ser
+        entregue sem verificação."""
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="concatenação"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada. Outra afirmação inventada.",
+                blocks=(AnswerBlock(text="Afirmação verificada.", claim_id="c1"),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_block_referencing_unknown_claim_is_rejected(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="inexistente"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada.",
+                blocks=(AnswerBlock(text="Afirmação verificada.", claim_id="c9"),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_claim_block_must_match_claim_text(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="corresponder"):
+            GeneratedAnswer(
+                answer_markdown="Outro texto.",
+                blocks=(AnswerBlock(text="Outro texto.", claim_id="c1"),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_every_claim_must_appear_as_block(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="aparecer"):
+            GeneratedAnswer(
+                answer_markdown="Só prosa conectiva.",
+                blocks=(AnswerBlock(text="Só prosa conectiva."),),
+                claims=(claim,),
+                abstained=False,
+            )
 
 
 class TestQuoteResponse:
