@@ -1,9 +1,9 @@
 # Terceira revisão T05
 
-Data: 2026-08-29  
+Data: 2026-08-29
 Referências: `docs/rag/REVIEW_T05.md`,
 `docs/rag/REVIEW_T05_ROUND2.md`,
-`docs/rag/REVIEW_RESPONSE_T05.md`  
+`docs/rag/REVIEW_RESPONSE_T05.md`
 Resultado: **correções obrigatórias**
 
 Os gates regulares e os dois e2e reais passam. R5-01, R5-02, R5-03 e R5-05

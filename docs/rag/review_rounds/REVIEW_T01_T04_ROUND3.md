@@ -1,7 +1,7 @@
 # Terceira revisão — T01 a T04
 
-Data: 2026-08-29  
-Referência: resposta à seção ROUND2 em `REVIEW_RESPONSE_T01_T04.md`  
+Data: 2026-08-29
+Referência: resposta à seção ROUND2 em `REVIEW_RESPONSE_T01_T04.md`
 Resultado: **reprovado; um bloqueador e duas correções importantes permanecem**
 
 ## 1. Gates executados
@@ -22,8 +22,8 @@ RR01, RR03 e RR04 foram confirmados nos caminhos testados. RR02 permanece incomp
 
 ### RRR01 — Imutabilidade profunda e proteção do repository ainda são incompletas
 
-Origem: RR02  
-Severidade: alta  
+Origem: RR02
+Severidade: alta
 Critérios: AC-09, AC-15
 
 Problemas reproduzidos:
@@ -77,8 +77,8 @@ Testes obrigatórios:
 
 ### RRR02 — Temporário interrompido de sidecar é tratado como objeto corrompido
 
-Origem: RR03/R04  
-Severidade: média  
+Origem: RR03/R04
+Severidade: média
 Tarefa: T04
 
 `_write_sidecar()` cria arquivos no formato:
@@ -105,9 +105,9 @@ Correção esperada:
 
 ### RRR03 — Banco ainda aceita `EmbeddingVersion` incompatível
 
-Origem: RR05  
-Severidade: média  
-Tarefa: T03  
+Origem: RR05
+Severidade: média
+Tarefa: T03
 Critério: AC-15
 
 O repository rejeita dimensão diferente de 1024, mas a tabela mantém:

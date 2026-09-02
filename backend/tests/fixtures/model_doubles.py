@@ -24,6 +24,7 @@ from rag.domain.providers import (
     SummaryRequest,
     SummaryResult,
 )
+from rag.domain.versions import EmbeddingVersion, utcnow
 
 
 def _deterministic_vector(text: str, dimensions: int) -> list[float]:
@@ -64,6 +65,15 @@ class FakeEmbeddingProvider:
         self.calls.append(text)
         return _deterministic_vector(text, self.dimensions)
 
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="fake-embedding",
+            model_name="fake-embedding",
+            dimensions=self.dimensions,
+            created_at=utcnow(),
+        )
+
 
 _CONCEPT_WORDS: tuple[tuple[str, frozenset[str]], ...] = (
     ("fate", frozenset({"destino", "spleen", "fado"})),
@@ -100,6 +110,15 @@ class ConceptEmbeddingProvider:
 
     async def embed_query(self, text: str) -> list[float]:
         return concept_embedding(text, self.dimensions)
+
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="concept-embedding",
+            model_name="concept-embedding",
+            dimensions=self.dimensions,
+            created_at=utcnow(),
+        )
 
 
 class FakeRerankerProvider:

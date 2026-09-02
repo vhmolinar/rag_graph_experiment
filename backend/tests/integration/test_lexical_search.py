@@ -6,22 +6,35 @@ obra/edição exercitados via SQL real; entrada adversarial confirma que nada
 """
 
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
 from rag.domain.enums import SourceType
+from rag.domain.indexing import IndexRun
 from rag.domain.library import Edition, Passage, Work
 from rag.domain.query import EditionFilter, LexicalQuery
 from rag.domain.runs import RankedCandidate
-from rag.domain.versions import ChunkingVersion, EmbeddingVersion, utcnow
+from rag.domain.versions import (
+    ChunkingVersion,
+    EmbeddingVersion,
+    ExtractionVersion,
+    ModelEndpointVersion,
+    utcnow,
+)
 from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.editions import EditionsRepository
+from rag.infrastructure.repositories.index_runs import IndexRunsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
-from rag.infrastructure.repositories.search import LexicalSearchRepository
+from rag.infrastructure.repositories.search import (
+    MAX_SEARCH_LIMIT,
+    LexicalSearchRepository,
+)
 from rag.infrastructure.repositories.versions import VersionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
+from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
 
 @dataclass
@@ -160,6 +173,103 @@ async def _seed(db: Database) -> Corpus:
 
 def _ids(candidates: list[RankedCandidate]) -> set[UUID]:
     return {c.passage_id for c in candidates}
+
+
+async def _seed_two_runs(
+    db: Database,
+) -> tuple[UUID, UUID]:
+    """Reproduz o estado após `rag index <edition> --force` (T6-01/T6-10):
+    a MESMA edição com DUAS execuções de indexação — a segunda ativa — e
+    passagens em ambas, com o histórico preservado no banco.
+
+    Ambas as passagens contêm o mesmo termo pesquisável ("ciúme") para que,
+    sem a seleção da execução ativa (T8-01), a busca devolvesse as duas.
+    Retorna os ids das duas passagens (antiga/Inativa, ativa).
+    """
+    async with db.connection() as conn:
+        work = await WorksRepository(conn).create(Work(canonical_title="Obra Indexada"))
+        edition = await EditionsRepository(conn).create(
+            Edition(
+                work_id=work.id,
+                title="Edição Indexada",
+                source_type=SourceType.PDF_TEXT,
+                source_sha256="c" * 64,
+            )
+        )
+        versions = VersionsRepository(conn)
+        extraction = await versions.get_or_create(
+            ExtractionVersion(label="ext-lex", created_at=utcnow())
+        )
+        chunking = await versions.get_or_create(
+            ChunkingVersion(label="chunk-lex", created_at=utcnow())
+        )
+        embedding = await versions.get_or_create(
+            EmbeddingVersion(
+                label="emb-lex",
+                model_name="m",
+                dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                created_at=utcnow(),
+            )
+        )
+        endpoint = await versions.get_or_create(
+            ModelEndpointVersion(
+                label="ep-lex",
+                endpoint_kind="embedding",
+                provider="fake",
+                model_name="m",
+                params={},
+                created_at=utcnow(),
+            )
+        )
+        runs = IndexRunsRepository(conn)
+        repo = PassagesRepository(conn)
+
+        async def child(run_id: UUID, ordinal: int, text: str) -> UUID:
+            passage = Passage(
+                edition_id=edition.id,
+                ordinal=ordinal,
+                text=text,
+                token_count=len(text.split()),
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding.id,
+                index_run_id=run_id,
+            )
+            created = await repo.create(passage, embedding=[0.1] * EMBEDDING_COLUMN_DIMENSIONS)
+            return created.id
+
+        first = await runs.create(
+            IndexRun(
+                edition_id=edition.id,
+                extraction_version_id=extraction.id,
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding.id,
+                model_endpoint_version_id=endpoint.id,
+                is_active=True,
+                created_at=utcnow(),
+            )
+        )
+        old_passage = await child(
+            first.id, 0, "Bentinho sentia o ciúme antigo, esquecido pela reindexação."
+        )
+        await runs.deactivate(first.id)
+
+        second: IndexRun = await runs.create(
+            IndexRun(
+                edition_id=edition.id,
+                extraction_version_id=extraction.id,
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding.id,
+                model_endpoint_version_id=endpoint.id,
+                is_active=True,
+                created_at=utcnow(),
+            )
+        )
+        active_passage = await child(
+            second.id, 0, "Bentinho sentia o ciúme atual, agora registrado como ativo."
+        )
+        await conn.execute("ANALYZE passages")
+
+    return old_passage, active_passage
 
 
 async def test_accent_insensitive_required_term(db: Database) -> None:
@@ -330,3 +440,169 @@ async def test_no_results_returns_empty_list(db: Database) -> None:
             LexicalQuery(required_terms=("inexistentexyz",), trigram_threshold=0.9)
         )
     assert hits == []
+
+
+async def test_search_only_returns_passages_of_active_index_run(db: Database) -> None:
+    """T8-01 (bloqueador): após `rag index <edition> --force`, a busca lexical
+    usa apenas a execução ATIVA — passagens de execuções inativas (preservadas
+    no banco para reprodução, SPEC §6/AC-15) nunca são candidatas."""
+    old_passage, active_passage = await _seed_two_runs(db)
+    async with db.connection() as conn:
+        hits = await LexicalSearchRepository(conn).search(LexicalQuery(required_terms=("ciúme",)))
+    ids = _ids(hits)
+    assert active_passage in ids
+    assert old_passage not in ids
+    # O histórico permanece no banco (nada foi apagado) e só há uma execução
+    # ativa — a seleção é explícita, não uma exclusão física.
+    async with db.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) FROM passages WHERE id = ANY(%s)", ([old_passage, active_passage],)
+        )
+        preserved = await cur.fetchone()
+        await cur.execute("SELECT count(*) FROM index_runs WHERE is_active")
+        active_runs = await cur.fetchone()
+    assert preserved is not None
+    assert active_runs is not None
+    assert preserved[0] == 2
+    assert active_runs[0] == 1
+
+
+async def test_legacy_rows_stay_eligible_until_edition_has_active_run(
+    db: Database,
+) -> None:
+    """T8-01: política de compatibilidade documentada — passagens legadas
+    (`index_run_id IS NULL`, fora do fluxo de `rag index`) permanecem elegíveis
+    enquanto a edição NÃO tem execução ativa; uma vez indexada, saem do
+    conjunto corrente junto com as execuções antigas (nunca reintroduzem um
+    conjunto inativo)."""
+    corpus = await _seed(db)
+    async with db.connection() as conn:
+        repository = LexicalSearchRepository(conn)
+        without_run = await repository.search(LexicalQuery(required_terms=("ciume",)))
+    assert corpus.ciume_accented in _ids(without_run)
+    # Mesma edição, agora com uma execução ativa: a passagem legada sai.
+    async with db.connection() as conn:
+        # Reusa a edição A exatamente como criada em _seed e atribui-lhe uma
+        # execução ativa (um chunk-filho novo) — a busca passa a ignorar as
+        # linhas NULL daquela edição.
+        versions = VersionsRepository(conn)
+        chunking = await versions.get_or_create(
+            ChunkingVersion(label="chunk-legacy", created_at=utcnow())
+        )
+        embedding = await versions.get_or_create(
+            EmbeddingVersion(
+                label="emb-legacy",
+                model_name="m",
+                dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                created_at=utcnow(),
+            )
+        )
+        extraction = await versions.get_or_create(
+            ExtractionVersion(label="ext-legacy", created_at=utcnow())
+        )
+        endpoint = await versions.get_or_create(
+            ModelEndpointVersion(
+                label="ep-legacy",
+                endpoint_kind="embedding",
+                provider="fake",
+                model_name="m",
+                params={},
+                created_at=utcnow(),
+            )
+        )
+        run = await IndexRunsRepository(conn).create(
+            IndexRun(
+                edition_id=corpus.edition_a,
+                extraction_version_id=extraction.id,
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding.id,
+                model_endpoint_version_id=endpoint.id,
+                is_active=True,
+                created_at=utcnow(),
+            )
+        )
+        active = await PassagesRepository(conn).create(
+            Passage(
+                edition_id=corpus.edition_a,
+                ordinal=99,
+                text="O ciúme atual registrado como ativo.",
+                token_count=6,
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding.id,
+                index_run_id=run.id,
+            ),
+            embedding=[0.1] * EMBEDDING_COLUMN_DIMENSIONS,
+        )
+        with_index = await LexicalSearchRepository(conn).search(
+            LexicalQuery(required_terms=("ciume",))
+        )
+    ids_with_index = _ids(with_index)
+    assert active.id in ids_with_index
+    assert corpus.ciume_accented not in ids_with_index
+
+
+async def test_filter_include_edition(db: Database) -> None:
+    """AC-07/T8-02: inclusão de edição é aplicada no SQL — com candidatos
+    elegíveis em AMBAS as edições, só a edição incluída retorna."""
+    corpus = await _seed(db)
+    async with db.connection() as conn:
+        hits = await LexicalSearchRepository(conn).search(
+            LexicalQuery(required_terms=("liberdade",)),
+            filters=EditionFilter(include_edition_ids=frozenset({corpus.edition_a})),
+        )
+    ids = _ids(hits)
+    assert corpus.ciume_accented in ids
+    assert corpus.liberdade_b not in ids
+
+
+async def test_filter_exclude_work(db: Database) -> None:
+    """AC-07/T8-02: exclusão de obra é aplicada no SQL — mesmo com candidatos
+    da obra excluída presentes, eles nunca retornam (a exclusão não pode ser
+    contornada por um candidato elegível)."""
+    corpus = await _seed(db)
+    async with db.connection() as conn:
+        hits = await LexicalSearchRepository(conn).search(
+            LexicalQuery(required_terms=("liberdade",)),
+            filters=EditionFilter(exclude_work_ids=frozenset({corpus.work_a})),
+        )
+    ids = _ids(hits)
+    assert corpus.liberdade_b in ids
+    assert corpus.ciume_accented not in ids
+
+
+async def test_limit_is_respected(db: Database) -> None:
+    """T8-03: um limite positivo é um teto real de candidatos."""
+    await _seed(db)
+    async with db.connection() as conn:
+        hits = await LexicalSearchRepository(conn).search(
+            LexicalQuery(required_terms=("liberdade",)), limit=1
+        )
+    assert len(hits) == 1
+
+
+@pytest.mark.parametrize("limit", [0, -1, MAX_SEARCH_LIMIT + 1, 1.5, True, "3"])
+async def test_invalid_limit_is_rejected(db: Database, limit: object) -> None:
+    """T8-03/R2-T8-03: `limit` não-inteiro (float, bool, string numérica) ou
+    fora da faixa é rejeitado na fronteira do repository — `LIMIT -1`/`LIMIT
+    0` no PostgreSQL não truncam como se espera, `True` equivale a 1 e um
+    float passaria nas comparações de faixa, violando o orçamento de T09."""
+    async with db.connection() as conn:
+        with pytest.raises(ValueError, match="limit deve ser um inteiro"):
+            await LexicalSearchRepository(conn).search(
+                LexicalQuery(required_terms=("ciume",)),
+                limit=limit,  # type: ignore[arg-type]
+            )
+
+
+async def test_invalid_limit_rejected_before_obtaining_cursor(db: Database) -> None:
+    """R2-T8-03: a rejeição de tipo de `limit` ocorre ANTES de obter cursor ou
+    executar SQL — nunca vira erro tardio do driver (semântica de limite
+    não intencional)."""
+    conn = MagicMock()
+    repository = LexicalSearchRepository(conn)
+    with pytest.raises(ValueError, match="limit deve ser um inteiro"):
+        await repository.search(
+            LexicalQuery(required_terms=("ciume",)),
+            limit=True,
+        )
+    conn.cursor.assert_not_called()

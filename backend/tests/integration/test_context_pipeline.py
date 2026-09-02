@@ -29,8 +29,9 @@ from rag.domain.answer import QuoteResponse
 from rag.domain.context import ContextBudget, ContextPolicy, PackedContext, context_total_chars
 from rag.domain.enums import Depth, Intent, SearchStrategy, SourceType
 from rag.domain.library import Edition, Page, Passage, Section, Work
-from rag.domain.query import LexicalQuery, QueryPlan, StrategyExplanation
+from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan, StrategyExplanation
 from rag.domain.retrieval import RetrievalPolicy, RetrievalResult
+from rag.domain.runs import AnswerRun
 from rag.domain.versions import (
     ChunkingVersion,
     ContextPolicyVersion,
@@ -41,6 +42,7 @@ from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
+from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
 
@@ -267,6 +269,13 @@ def _retrieval_service() -> RetrievalService:
 
 async def _retrieve(db: Database) -> RetrievalResult:
     async with db.connection() as conn:
+        run = await AnswerRunsRepository(conn).create(
+            AnswerRun(
+                question_original="Consulta de contexto T12.",
+                question_anonymized="Consulta de contexto T12.",
+                explicit_filters=EditionFilter(),
+            )
+        )
         return await _retrieval_service().retrieve(
             conn,
             lexical_query=LexicalQuery(required_terms=("sufoca",)),
@@ -274,6 +283,7 @@ async def _retrieve(db: Database) -> RetrievalResult:
             filters=None,
             policy=RetrievalPolicy.defaults(),
             depth=Depth.STANDARD,
+            run=run,
         )
 
 

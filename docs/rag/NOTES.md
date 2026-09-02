@@ -789,13 +789,15 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
    (modelo ou prompt distintos) cria NOVOS registros — histórico nunca é
    sobrescrito (test: "reexecução com nova versão não sobrescreve histórico").
    Não há `--force` em T11: apagar registros antigos violaría a garantia.
-5. **Idempotência por (edição, versão).** Se a edição já tem resumos da
-   versão desta execução, a execução é no-op (mesmo espírito de `rag index`
-   sem `--force`). A identidade de uma execução é a versão de síntese; toda
-   a execução corre numa única transação, então "tem sínteses desta versão"
-   implica a execução concluíu — incluindo conceitos (que podem
-   legitimamente ser zero em conteúdo). Falha rollbacka tudo, nunca publica
-   estado parcial.
+5. **Idempotência por (edição, versão), registrada como execução concluída —
+   não pela existência de itens.** A identidade de uma execução é a versão de
+   síntese (`summarizer_version_id`), registrada em `enrichment_runs` na MESMA
+   transação dos itens publicados (correção T11-03). O registro existe MESMO
+   quando nenhum item é publicado (todos os suportes rejeitados — suporte
+   vazio é comportamento legítimo do provedor, item 2): "tem execução desta
+   versão" implica a execução concluíu, e reexecutar a mesma versão é no-op
+   reprodutível. Conceitos podem legitimamente ser zero em conteúdo. Falha
+   rollbacka tudo (itens e execução), nunca publica estado parcial.
 6. **Escopos de suporte validados fechados no serviço.** Resumo de seção:
    suportes ⊆ passagens-filho diretas da seção. Resumo de capítulo (Section
    de topo, level=0): suportes ⊆ passagens-filho das seções DESCENDENTES do
@@ -832,75 +834,79 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
     `ModelAuthSettings`/`ResilienceSettings` (T07); configuração `ENRICHMENT_*`.
     Retries só cobrem falhas transitórias; 4xx/payload inválido falham
     fechados (mesma regra de T07, NOTES.md §10.8 item 1).
-12. **Sem comando CLI em T11** (não consta nos entregáveis; os comandos de
-    fase 1 continuam sendo ingest/ocr/index/inspect). O enriquecimento é
-    invocado via `EnrichmentService`; integração no CLI/API fica para T14+
-    se a operação o exigir.
+12. **Comando `rag enrich <edition-id>`** (correção T11-01). O enriquecimento
+    é acionável e configurado pela operação (`EnrichmentService` +
+    `OpenAiCompatibleEnrichmentProvider`, env `ENRICHMENT_*`), não só uma API
+    interna: `rag ingest` → `rag index` → `rag enrich` produz as sínteses e
+    conceitos em operação (SPEC §7.4 "Após a indexação das passagens"). A
+    rota operacional é testada ponta a ponta, inclusive falha fechada sem
+    publicação parcial. A integração no API fica para T14 se a operação o
+    exigir.
 
-### 10.13 Registro do implementador — 2026-08-30 (fase 1, T12)
+## 11. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T10)
 
-Interpretações declaradas antes de implementar T12 (montagem de contexto e modo
-quote), não bloqueantes; podem ser revistas pelo usuário.
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T10.md`
+(T10-01 a T10-04). Elas complementam o registro §10.11.
 
-1. **Nova tabela de versão `context_policy_versions` (migration 0003).** A
-   política de montagem de contexto (número de evidências, orçamento de
-   contexto, expansão parental, limite flexível por edição) afeta a resposta
-   (SPEC §2: "toda configuração que afeta uma resposta deve ser versionada";
-   AC-15). O schema aprovado (T03) lista seis tipos de versão, mas §6 define
-   um MÍNIMO ("devem existir registros para..."), não um teto: adicionar um
-   registro de versão novo é aditivo (nova tabela, trigger de imutabilidade
-   mesmo padrão), não altera tabelas existentes nem critérios. A tabela é
-   gemelha da `retrieval_policy_versions` (T09) e registrada na allowlist do
-   `VersionsRepository`; `PackedContext.policy_version_id` expõe o registro
-   para `AnswerRun`/T13.
-2. **`ContextPolicy`/`ContextBudget` no domínio, mesma convenção de
-   `RetrievalPolicy` (T09).** Orçamento por profundidade com valores iniciais
-   conservadores e monotonos (brief < standard < deep); calibração no
-   benchmark de T19 (NOTES.md §4). Parâmetros: `max_evidences` (número de
-   evidências citáveis, SPEC §9.1), `max_context_chars` (orçamento total de
-   contexto = evidências + expansão parental), `parent_expansion_chars`
-   (máximo de texto parental por evidência, contexto NUNCA citável) e
-   `per_edition_limit` (limite flexível por edição; `None` = sem limite).
-3. **Seleção de evidências é função pura do domínio (`select_evidences`), não
-   chamada ao provedor de geração/reranking.** Ordem preservada do ranking
-   reranked (T09); deduplicação por `passage_id`; o orçamento de contexto é
-   respeitado durante a seleção (uma evidência que não couber no orçamento
-   restante é descartada, nunca estoura) e `PackedContext` impõe
-   estruturalmente `total_chars <= context_budget_chars` (falha fechada se
-   violado — nunca se devolve contexto acima do orçamento). A expansão
-   parental é limitada por evidência (`parent_expansion_chars`), truncada
-   como contexto adicional; nunca é texto citável.
-4. **Diversidade adaptativa executada na seleção: limite flexível por edição,
-   nunca quota cega.** `select_evidences` aplica a capa por edição
-   (`per_edition_limit`) SÓ quando `needs_diversity` (comparativa/conceitual
-   ampla, SPEC §8.6). "Flexível" = a capa não é uma meta a preencher: se uma
-   edição tem MENOS candidatos que o limite, as posições sobrentes NÃO são
-   preenchidas com outra obra menos relevante; se todas as edições atingirão
-   a capa e o orçamento ainda couber, a seleção PARA (pode ficar abaixo de
-   `max_evidences`) — nunca se inclui uma obra menos relevante para atingir
-   uma quantidade fixa. Factual/navegacional maximizam relevância sem capa
-   por edição.
-5. **Modo quote = `QuoteResponse` (domínio T02) construido a partir da
-   montagem de contexto; o serviço NÃO tem provedor de geração.** `ContextService.quote`
-   delega para `ContextService.assemble` (que nunca chama o provedor de
-   geração) e projeta os `EvidenceRef` seleccionados. Ausência de geração é
-   estrutural (nenhum `GeneratorProvider` na assinatura) E testada
-   ("nenhuma chamada ao generator em quote", T12). O `QuoteResponse` não
-   adiciona campos (o teste `test_has_no_prose_fields` de T02 fixa o
-   contrato `{"evidences"}`).
-6. **Metadados citáveis resolvidos numa única query por passagem
-   (`PassagesRepository.get_citable`).** Joins `passages` → `sections`
-   (path), `pages` (página física/rótulo impresso da `page_start_id`),
-   `editions` → `works` (`work_id`) e a passagem-pai (`parent_passage_id`/
-   `parent_text` via self-join). EPUB sem páginas: `physical_page`/
-   `printed_label`/offsets ficam nulos (NOTES.md §10.6 item 3). O trecho
-   recomposto a partir de páginas e offsets deve reproduzir `text` da
-   evidência (AC-03; testado via `PagesRepository.list_by_edition`).
-7. **`ContextService` expõe `assemble(...) -> PackedContext` e
-   `quote(...) -> QuoteResponse`; o provedor de geração fica FORA do serviço.**
-   `PackedContext.evidences` (com `parent_text`) é a entrada natural de T13
-   (`GenerationRequest.evidences` = `EvidenceRef` de cada evidência; o texto
-   parental, não citável, pode entrar como contexto adicional). Sem
-   migration nova além de `context_policy_versions`; sem alteração em
-   `runs.py`/`AnswerRun` nesta tarefa (a integração completa de versões na
-   `AnswerRun` é T13/T18).
+1. **Filtro efetivo obrigatório no plano.** `QueryPlan` ganhou
+   `effective_filters: EditionFilter`; `PlannerService.plan()` calcula
+   `merge_filters(request.explicit_filter(), inferred)`, mantendo
+   `inferred_filters` para os chips. A recuperação deve consumir somente o
+   filtro efetivo.
+2. **`expanded` exige provedor de planejamento.** Sem provedor, a estratégia
+   `expanded`, automática ou explícita, falha fechada com
+   `ModelUnavailableError`; o plano não declara expansão que não possa executar.
+3. **Sinais posicionais `no`/`na`/`em`.** Essas preposições são sinais de
+   inclusão apenas quando imediatamente antes da menção à obra; menções
+   ambíguas continuam sem filtro inferido.
+4. **Segurança do endpoint de planejamento.** `PlannerEndpointSettings` herda
+   `HttpEndpointSettings`: Bearer sobre `http://` é recusado; sem credencial,
+   `http://` continua permitido.
+5. **AC-07 permanece parcial.** A cobertura de T10 vale para planejamento e
+   recuperação; o critério global exige a prova ponta a ponta de T13.
+
+## 12. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T11)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T11.md`
+(T11-01 a T11-03). Elas complementam o registro §10.12.
+
+1. **Enriquecimento integrado à operação via `rag enrich` (T11-01).** O
+   desvio anterior ("integração fica para T14+") é revocado: a rota
+   operacional `rag enrich <edition-id>` (SPEC §7.4 "Após a indexação das
+   passagens") é acionável/configurada via `EnrichmentService` +
+   `OpenAiCompatibleEnrichmentProvider` (env `ENRICHMENT_*`) e testada ponta
+   a ponta no CLI, inclusive falha fechada sem publicação parcial.
+2. **Enriquecimento opera sobre a execução ativa de indexação (T11-02).**
+   `EnrichmentService.enrich()` resolve a `IndexRun` ativa da edição e usa
+   `PassagesRepository.list_by_index_run()` — nunca `list_by_edition()` (que
+   inclui histórico). Sínteses e conceitos representam o conjunto indexado
+   corrente; passagens de execuções inativas nunca chegam ao provedor nem
+   viram suporte. Integração com duas reindexações prova essa garantia.
+3. **Idempotência por execução de enriquecimento, não por existência de
+   itens (T11-03).** Nova migration `0005` cria `enrichment_runs`; a execução
+   concluída (inclusive sem itens publicados) é registrada na MESMA transação
+   dos itens. Reexecutar a mesma identidade é no-op reprodutível; a identidade
+   NOVA acumula histórico sem sobrescrever (AC-15).
+4. **`index_run_id` integra a identidade de `enrichment_runs` (R2-T11-01).** A
+   chave de idempotência de uma execução de enriquecimento é
+   `(edition_id, index_run_id, summarizer_version_id)`: `index_run_id` — o
+   conjunto de passagens efetivamente enviado ao provedor — NÃO pode ficar de
+   fora, ou reindexar a edição com o MESMO modelo de enriquecimento seria um
+   no-op e as sínteses continuariam sustentadas por chunks inativos (viola
+   T11-02, SPEC §7.4/§8.7, AC-15). Reindexar minta uma nova execução de
+   enriquecimento sobre o conjunto corrente; execuções anteriores ficam
+   preservadas como histórico. Migration `0005` inclui a coluna `index_run_id`
+    (FK composta `(index_run_id, edition_id) → index_runs(id, edition_id)`) e a
+    unicidade por `(edition_id, index_run_id, summarizer_version_id)`.
+
+## 13. Registro do implementador — 2026-08-30 (fase 1, T12)
+
+1. **Política de contexto versionada.** `ContextPolicy`/`ContextBudget`
+   definem orçamento por profundidade, expansão parental e limite flexível por
+   edição. A política é registrada como `ContextPolicyVersion` imutável.
+2. **Seleção pura de evidências.** `select_evidences` preserva ranking,
+   deduplica por passagem, respeita orçamento e aplica limite flexível por
+   edição somente quando o plano requer diversidade. Expansão parental é
+   contexto adicional, nunca evidência citável.
+3. **Modo `quote` sem geração.** `ContextService.quote` projeta somente
+   `EvidenceRef` do contexto montado e não recebe provider de geração.

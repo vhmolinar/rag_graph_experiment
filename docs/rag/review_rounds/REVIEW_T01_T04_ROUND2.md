@@ -1,7 +1,7 @@
 # Segunda revisão — T01 a T04
 
-Data: 2026-08-29  
-Referências: `REVIEW_T01_T04.md` e `REVIEW_RESPONSE_T01_T04.md`  
+Data: 2026-08-29
+Referências: `REVIEW_T01_T04.md` e `REVIEW_RESPONSE_T01_T04.md`
 Resultado: **reprovado; três correções bloqueadoras e duas importantes permanecem**
 
 ## 1. Verificações executadas
@@ -21,8 +21,8 @@ As correções R02, R03 e R08–R11 foram confirmadas. R01, R04, R05 e R06 ainda
 
 ### RR01 — Escopo de summaries ainda pode apontar para outra edição ou para ID inexistente
 
-Origem: R01  
-Severidade: alta  
+Origem: R01
+Severidade: alta
 Critérios: AC-03, AC-12, AC-15
 
 O novo `summaries.edition_id` protege os suportes via FK composta, mas não protege o recurso resumido:
@@ -49,8 +49,8 @@ Testes:
 
 ### RR02 — `AnswerRun` não é imutável e `transition()` altera campos arbitrários
 
-Origem: R05  
-Severidade: alta  
+Origem: R05
+Severidade: alta
 Critério: AC-15
 
 `ConfigDict(frozen=True)` é superficial:
@@ -82,8 +82,8 @@ Não é necessário impedir deliberadamente `model_construct`, mas o caminho nor
 
 ### RR03 — Sidecar pode declarar hash ou tipo incorreto e ainda ser aceito
 
-Origem: R04  
-Severidade: alta  
+Origem: R04
+Severidade: alta
 Critérios: AC-01, AC-03
 
 `metadata()` compara apenas `size_bytes`. `verify_integrity()` recomputa o hash do objeto, mas não confirma:
@@ -110,7 +110,7 @@ Testes:
 
 ### RR04 — `make audit` não é seguro para execuções concorrentes
 
-Origem: R06  
+Origem: R06
 Severidade: média
 
 O script usa o caminho global fixo `backend/.audit-reqs.txt`. Os testes de tooling também criam e removem esse mesmo arquivo. Ao executar `make test` e `make audit` em paralelo, o teste removeu o arquivo enquanto `pip-audit` o usava:
@@ -134,8 +134,8 @@ Adicionar teste com duas execuções concorrentes do script.
 
 ### RR05 — Versões de embedding incompatíveis podem ser registradas
 
-Origem: R02  
-Severidade: média  
+Origem: R02
+Severidade: média
 Critério: AC-15
 
 A coluna da revisão é `vector(1024)`, mas `embedding_versions.dimensions` aceita qualquer inteiro positivo. O próprio teste registra dimensão 8. O repository valida o vetor contra a versão, mas não valida a versão contra a capacidade do schema; a falha ocorre apenas ao inserir a passagem.

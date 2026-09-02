@@ -1,7 +1,7 @@
 # Feedback de revisão — T01 a T04
 
-Data: 2026-08-29  
-Escopo: T01, T02, T03 e T04  
+Data: 2026-08-29
+Escopo: T01, T02, T03 e T04
 Resultado: **correções necessárias antes da aprovação**
 
 ## 1. Resumo
@@ -30,8 +30,8 @@ Uma execução histórica de integração havia terminado com 18 erros enquanto 
 
 ### R01 — Impedir referências entre edições diferentes
 
-Severidade: alta  
-Tarefa: T03  
+Severidade: alta
+Tarefa: T03
 Critérios afetados: AC-02, AC-03, AC-15
 
 Problema:
@@ -55,8 +55,8 @@ Testes obrigatórios:
 
 ### R02 — Tornar a migration determinística
 
-Severidade: alta  
-Tarefa: T03  
+Severidade: alta
+Tarefa: T03
 Critério afetado: AC-15
 
 Problema:
@@ -78,8 +78,8 @@ Testes obrigatórios:
 
 ### R03 — Corrigir a identidade de `PromptVersion`
 
-Severidade: alta  
-Tarefa: T03  
+Severidade: alta
+Tarefa: T03
 Critério afetado: AC-15
 
 Problema:
@@ -101,8 +101,8 @@ Testes obrigatórios:
 
 ### R04 — Fechar a janela de inconsistência do ArtifactStore
 
-Severidade: alta  
-Tarefa: T04  
+Severidade: alta
+Tarefa: T04
 Critérios afetados: AC-01, AC-03
 
 Problema:
@@ -133,8 +133,8 @@ Testes obrigatórios:
 
 ### R05 — Impedir bypass de invariantes por `model_copy`
 
-Severidade: alta  
-Tarefa: T02/T03  
+Severidade: alta
+Tarefa: T02/T03
 Critérios afetados: AC-09, AC-15
 
 Problema:
@@ -167,7 +167,7 @@ Testes obrigatórios:
 
 ### R06 — Não mascarar falhas em `make audit`
 
-Severidade: média  
+Severidade: média
 Tarefa: T01
 
 Problema:
@@ -183,7 +183,7 @@ Correção esperada:
 
 ### R07 — Tornar o scan de IOCs estrutural
 
-Severidade: média  
+Severidade: média
 Tarefa: T01
 
 Problema:
@@ -201,7 +201,7 @@ Não há IOC ativo no lockfile atual.
 
 ### R08 — Não ignorar conflitos de seção/página silenciosamente
 
-Severidade: média  
+Severidade: média
 Tarefa: T03
 
 Problema:
@@ -220,8 +220,8 @@ Testes obrigatórios:
 
 ### R09 — Completar evidência de persistência de runs
 
-Severidade: média  
-Tarefa: T03  
+Severidade: média
+Tarefa: T03
 Critérios afetados: AC-06, AC-15
 
 Problema:
@@ -238,7 +238,7 @@ Isso não exige implementar a recuperação de T08/T09.
 
 ### R10 — Validar os índices realmente declarados
 
-Severidade: média  
+Severidade: média
 Tarefa: T03
 
 Problema:
@@ -252,7 +252,7 @@ Correção esperada:
 
 ### R11 — Testar lookup por hash da edição
 
-Severidade: média  
+Severidade: média
 Tarefa: T03
 
 `EditionsRepository.get_by_source_hash()` é parte do caminho de idempotência, mas não possui teste.

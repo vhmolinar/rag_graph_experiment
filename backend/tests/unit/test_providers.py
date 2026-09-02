@@ -10,9 +10,19 @@ from rag.domain.providers import (
     GeneratorProvider,
     RerankerProvider,
 )
+from rag.domain.versions import EmbeddingVersion, utcnow
 
 
 class FakeEmbedding:
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="fake-emb",
+            model_name="fake-emb",
+            dimensions=1024,
+            created_at=utcnow(),
+        )
+
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[0.1, 0.2] for _ in texts]
 
@@ -46,6 +56,19 @@ def test_incomplete_implementation_fails_runtime_check() -> None:
             return []
 
     assert not isinstance(OnlyDocuments(), EmbeddingProvider)
+
+
+def test_embedding_provider_without_version_fails_protocol_check() -> None:
+    """R2-T9-01: EmbeddingProvider exige a propriedade embedding_version."""
+
+    class NoVersionEmbedding:
+        async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return []
+
+        async def embed_query(self, text: str) -> list[float]:
+            return []
+
+    assert not isinstance(NoVersionEmbedding(), EmbeddingProvider)
 
 
 async def test_generation_request_roundtrip_through_fake() -> None:

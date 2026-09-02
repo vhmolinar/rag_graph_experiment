@@ -9,6 +9,8 @@ objetos órfãos de uma transação abortada são detectáveis por `audit()`.
 `--dry-run` executa validação, hash, deduplicação e extração sem persistir.
 """
 
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -22,7 +24,7 @@ from rag.adapters.ocr_adapter import OcrProvenance, load_provenance
 from rag.domain.canonical import BlockKind, CanonicalDocument
 from rag.domain.enums import ArtifactKind, IngestionStatus, LicenseStatus, SourceType
 from rag.domain.errors import ConflictError, IngestionError
-from rag.domain.identifiers import Sha256, sha256_of_file
+from rag.domain.identifiers import Sha256, sha256_of_file, sha256_of_text
 from rag.domain.library import (
     Contributor,
     DerivedArtifactRef,
@@ -44,6 +46,30 @@ _VALID_SOURCE_TYPES_BY_SUFFIX: dict[str, frozenset[SourceType]] = {
     ".pdf": frozenset({SourceType.PDF_TEXT, SourceType.PDF_SCAN}),
     ".epub": frozenset({SourceType.EPUB}),
 }
+
+
+def resolve_edition_extraction_artifact(edition: Edition) -> tuple[Sha256, SourceType, str]:
+    """Resolve o artefato que produz a representação canônica da edição.
+
+    `pdf_scan` mantém o scan original como identidade da edição, mas extração,
+    backfill e indexação devem consumir exatamente o derivado OCR registrado.
+    Centralizar esta regra evita que esses fluxos escolham fontes diferentes.
+    """
+    if edition.source_type is SourceType.PDF_SCAN:
+        ocr_refs = [
+            artifact
+            for artifact in edition.derived_artifacts
+            if artifact.kind is ArtifactKind.OCR_TEXT_LAYER
+        ]
+        if len(ocr_refs) != 1:
+            raise IngestionError(
+                "Edição pdf_scan exige exatamente um derivado OCR registrado.",
+                context={"edition_id": str(edition.id), "derivados_ocr": str(len(ocr_refs))},
+            )
+        return ocr_refs[0].sha256, SourceType.PDF_TEXT, ".pdf"
+    if edition.source_type is SourceType.EPUB:
+        return edition.source_sha256, SourceType.EPUB, ".epub"
+    return edition.source_sha256, SourceType.PDF_TEXT, ".pdf"
 
 
 class IngestMetadata(BaseModel):
@@ -154,6 +180,62 @@ class IngestionService:
         self._store = store
         self._extractor = extractor
 
+    async def backfill_fingerprint(self, conn: AsyncConnection, *, edition_id: UUID) -> str:
+        """Reextrai a fonte canônica e preenche fingerprint ausente uma vez.
+
+        A persistência é compare-and-set: repetição com o mesmo fingerprint é
+        idempotente; uma identidade já estabelecida e divergente nunca é
+        sobrescrita por este comando administrativo.
+        """
+        editions = EditionsRepository(conn)
+        edition = await editions.get(edition_id)
+        if edition is None:
+            raise IngestionError("Edição não encontrada.", context={"edition_id": str(edition_id)})
+        artifact_sha256, extraction_type, suffix = resolve_edition_extraction_artifact(edition)
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+            with self._store.open_stream(artifact_sha256) as stream:
+                shutil.copyfileobj(stream, tmp)
+            tmp.flush()
+            canonical = self._extractor.extract(Path(tmp.name), extraction_type)
+
+        pages = await PagesRepository(conn).list_by_edition(edition.id)
+        canonical_pages = {page.physical_index: page for page in canonical.pages}
+        persisted_pages = {page.physical_index: page for page in pages}
+        if set(canonical_pages) != set(persisted_pages) or any(
+            sha256_of_text(page.text) != persisted_pages[index].text_sha256
+            for index, page in canonical_pages.items()
+        ):
+            raise IngestionError("Reextração diverge das páginas persistidas; backfill abortado.")
+
+        expected_sections = {
+            tuple(section.path): section for section in derive_sections(edition.id, canonical)
+        }
+        persisted_sections = {
+            tuple(section.path): section
+            for section in await SectionsRepository(conn).list_by_edition(edition.id)
+        }
+        if set(expected_sections) != set(persisted_sections) or any(
+            (
+                expected.level,
+                expected.title,
+                expected.start_page,
+                expected.end_page,
+            )
+            != (
+                persisted_sections[path].level,
+                persisted_sections[path].title,
+                persisted_sections[path].start_page,
+                persisted_sections[path].end_page,
+            )
+            for path, expected in expected_sections.items()
+        ):
+            raise IngestionError("Reextração diverge das seções persistidas; backfill abortado.")
+
+        fingerprint = canonical.fingerprint()
+        async with conn.transaction():
+            await editions.backfill_canonical_fingerprint(edition.id, fingerprint)
+        return fingerprint
+
     async def ingest(
         self,
         conn: AsyncConnection,
@@ -245,6 +327,7 @@ class IngestionService:
                     license_status=metadata.license_status,
                     derived_artifacts=[ocr_ref] if ocr_ref else [],
                     extraction_warnings=canonical.warnings,
+                    canonical_fingerprint=canonical.fingerprint(),
                 )
             )
             sections = derive_sections(edition.id, canonical)

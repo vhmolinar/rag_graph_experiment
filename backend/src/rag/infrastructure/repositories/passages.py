@@ -10,8 +10,15 @@ from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
 
 from rag.domain.context import CitablePassage
-from rag.domain.errors import EmbeddingDimensionError, NotFoundError
+from rag.domain.errors import ConcurrencyError, EmbeddingDimensionError, NotFoundError
 from rag.domain.library import Passage
+
+_SELECT_COLUMNS = (
+    "id, edition_id, section_id, page_start_id, page_end_id, ordinal, "
+    "text, token_count, char_start, char_end, context_header, "
+    "parent_passage_id, embedding_version_id, chunking_version_id, "
+    "original_text, index_run_id"
+)
 
 
 class PassagesRepository:
@@ -50,12 +57,14 @@ class PassagesRepository:
                                           page_end_id, ordinal, text, token_count,
                                           char_start, char_end, context_header,
                                           parent_passage_id, embedding,
-                                          embedding_version_id, chunking_version_id)
+                                          embedding_version_id, chunking_version_id,
+                                          original_text, index_run_id)
                     VALUES (%(id)s, %(edition_id)s, %(section_id)s, %(page_start_id)s,
                             %(page_end_id)s, %(ordinal)s, %(text)s, %(token_count)s,
                             %(char_start)s, %(char_end)s, %(context_header)s,
                             %(parent_passage_id)s, %(embedding)s,
-                            %(embedding_version_id)s, %(chunking_version_id)s)
+                            %(embedding_version_id)s, %(chunking_version_id)s,
+                            %(original_text)s, %(index_run_id)s)
                     """,
                     {
                         "id": passage.id,
@@ -73,42 +82,42 @@ class PassagesRepository:
                         "embedding": embedding,
                         "embedding_version_id": passage.embedding_version_id,
                         "chunking_version_id": passage.chunking_version_id,
+                        "original_text": passage.original_text,
+                        "index_run_id": passage.index_run_id,
                     },
                 )
         except errors.DataError as exc:
             raise EmbeddingDimensionError(cause=exc) from exc
+        except errors.UniqueViolation as exc:
+            # T6-10: colisão de (index_run_id, ordinal) só pode significar
+            # duas indexações concorrentes da mesma execução — tipado, nunca
+            # um IntegrityError cru vazando da camada de persistência.
+            raise ConcurrencyError(
+                "Passagem concorrente já registrada para esta execução de indexação.",
+                cause=exc,
+            ) from exc
         return passage
 
     async def get(self, passage_id: UUID) -> Passage | None:
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, edition_id, section_id, page_start_id, page_end_id, ordinal, "
-                "text, token_count, char_start, char_end, context_header, "
-                "parent_passage_id, embedding_version_id, chunking_version_id "
-                "FROM passages WHERE id = %s",
+                f"SELECT {_SELECT_COLUMNS} FROM passages WHERE id = %s",  # noqa: S608
                 (passage_id,),
             )
             row = await cur.fetchone()
         return Passage(**row) if row else None
 
     async def get_citable(self, passage_id: UUID) -> CitablePassage | None:
-        """Passagem com metadados citáveis (T12; AC-03).
-
-        Resolve num único JOIN as referencias de origem: seção (path), página
-        física e rótulo impresso do início, obra (`work_id`) e a passagem-pai
-        (`parent_text` para expansão de contexto, NUNCA citável — SPEC §7.3).
-        EPUB sem páginas: `physical_page`/`printed_label`/offsets ficam nulos
-        (NOTES.md §10.6 item 3). Toda condição é parametrizada.
-        """
+        """Resolve uma passagem recuperável em evidência citável para T12."""
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "SELECT p.id AS passage_id, "
-                "p.edition_id, e.work_id AS work_id, p.text, "
+                "p.edition_id, e.work_id AS work_id, COALESCE(p.original_text, p.text) AS text, "
                 "COALESCE(s.path, ARRAY[]::text[]) AS section_path, "
                 "pstart.physical_index AS physical_page, "
                 "pstart.printed_label AS printed_label, "
                 "p.char_start, p.char_end, p.parent_passage_id, "
-                "parent.text AS parent_text "
+                "COALESCE(parent.original_text, parent.text) AS parent_text "
                 "FROM passages p "
                 "JOIN editions e ON e.id = p.edition_id "
                 "LEFT JOIN sections s ON s.id = p.section_id "
@@ -121,25 +130,28 @@ class PassagesRepository:
                 (passage_id,),
             )
             row = await cur.fetchone()
-        if row is None:
-            return None
-        return CitablePassage(**row)
+        return CitablePassage(**row) if row is not None else None
 
     async def list_by_edition(self, edition_id: UUID) -> list[Passage]:
+        """Todas as passagens da edição, de QUALQUER execução de indexação
+        (histórico incluído) — usado por `rag inspect`/auditoria, nunca pela
+        recuperação (que deve usar `list_by_index_run` com a execução ativa;
+        T6-01)."""
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, edition_id, section_id, page_start_id, page_end_id, ordinal, "
-                "text, token_count, char_start, char_end, context_header, "
-                "parent_passage_id, embedding_version_id, chunking_version_id "
-                "FROM passages WHERE edition_id = %s ORDER BY ordinal",
+                f"SELECT {_SELECT_COLUMNS} FROM passages "  # noqa: S608
+                "WHERE edition_id = %s ORDER BY ordinal",
                 (edition_id,),
             )
             return [Passage(**row) for row in await cur.fetchall()]
 
-    async def delete_by_edition(self, edition_id: UUID) -> int:
-        """Remove todas as passagens da edição (pais e filhos juntos, numa
-        única instrução — seguro mesmo com a FK auto-referencial de
-        `parent_passage_id`). Usado por `rag index --force` (T06)."""
-        async with self._conn.cursor() as cur:
-            await cur.execute("DELETE FROM passages WHERE edition_id = %s", (edition_id,))
-            return cur.rowcount
+    async def list_by_index_run(self, index_run_id: UUID) -> list[Passage]:
+        """Passagens de UMA execução de indexação específica (T6-01) —
+        conjunto explícito, nunca inferido pela mera existência de linhas."""
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM passages "  # noqa: S608
+                "WHERE index_run_id = %s ORDER BY ordinal",
+                (index_run_id,),
+            )
+            return [Passage(**row) for row in await cur.fetchall()]

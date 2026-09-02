@@ -1,7 +1,7 @@
 # Quarta revisão — T01 a T04
 
-Data: 2026-08-29  
-Referência: resposta à seção ROUND3 em `REVIEW_RESPONSE_T01_T04.md`  
+Data: 2026-08-29
+Referência: resposta à seção ROUND3 em `REVIEW_RESPONSE_T01_T04.md`
 Resultado: **reprovado; um bloqueador de concorrência permanece**
 
 ## 1. Gates executados
@@ -21,8 +21,8 @@ RRR01–RRR03 foram confirmados nos cenários cobertos. A validação encontrou 
 
 ### R4-01 — `AnswerRunsRepository.save()` não valida a versão persistida do run
 
-Severidade: alta  
-Tarefas: T02/T03  
+Severidade: alta
+Tarefas: T02/T03
 Critério: AC-15
 
 O domínio valida transições em relação ao estado do objeto em memória, mas o repository não compara esse estado com a versão atualmente persistida.
@@ -63,8 +63,8 @@ Testes obrigatórios:
 
 ### R4-02 — Proveniência de artefato derivado não é garantida no banco
 
-Severidade: média  
-Tarefa: T03  
+Severidade: média
+Tarefa: T03
 Critérios: AC-02, AC-03
 
 O domínio exige que `DerivedArtifactRef.derived_from` seja igual a `Edition.source_sha256`, mas `derived_artifacts.derived_from_sha256` possui apenas validação de formato. SQL direto ou outro adapter pode associar o OCR ao hash original errado.
@@ -77,7 +77,7 @@ Correção esperada:
 
 ### R4-03 — Regra “chapter é Section de topo” está documentada, mas não imposta
 
-Severidade: média  
+Severidade: média
 Tarefa: T03
 
 O schema garante que o `section_id` pertence à edição, mas não diferencia section comum de chapter nem verifica nível. Qualquer seção aninhada pode ser usada com `scope_type='chapter'`.
@@ -90,7 +90,7 @@ Correção esperada:
 
 ### R4-04 — Evidência contém descrição obsoleta da dimensão
 
-Severidade: baixa  
+Severidade: baixa
 Arquivo: `docs/rag/EVIDENCE.md`
 
 A seção antiga de T03 ainda afirma que a dimensão é configurável por `RAG_EMBEDDING_DIMENSIONS` antes da primeira migration. Isso contradiz a migration determinística e as rodadas posteriores.

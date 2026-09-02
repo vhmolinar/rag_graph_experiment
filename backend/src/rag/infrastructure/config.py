@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,3 +40,15 @@ class StorageSettings(BaseSettings):
     root: Path = Path("./artifacts")
     max_size_bytes: int = 256 * 1024 * 1024  # 256 MiB por artefato
     temp_max_age_hours: int = 24
+
+
+class ChunkingSettings(BaseSettings):
+    """Parâmetros de chunking configuráveis por ambiente (T6-07,
+    REVIEW_T06.md) — `rag index` não fica preso aos defaults de
+    `ChunkingParams`; a CLI pode sobrepor individualmente cada valor."""
+
+    model_config = SettingsConfigDict(env_prefix="CHUNKING_", extra="ignore")
+
+    child_target_tokens: int = Field(default=400, gt=0)
+    child_overlap_tokens: int = Field(default=60, ge=0)
+    parent_target_tokens: int = Field(default=1600, gt=0)
