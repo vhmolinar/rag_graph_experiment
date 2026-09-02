@@ -179,15 +179,11 @@ class FakeGeneratorProvider:
 def _default_answer(request: GenerationRequest) -> GeneratedAnswer:
     first: EvidenceRef = request.evidences[0]
     claim = Claim(id="c1", text="Afirmação de exemplo.", evidence_ids=(first.passage_id,))
-    blocks = (
-        AnswerBlock(text=f"Resposta com base em {len(request.evidences)} evidência(s). "),
-        AnswerBlock(text=claim.text, claim_id="c1"),
-    )
+    blocks = (AnswerBlock(text=claim.text, claim_id="c1"),)
     return GeneratedAnswer(
-        answer_markdown="".join(block.text for block in blocks),
+        answer_markdown=claim.text,
         blocks=blocks,
         claims=(claim,),
-        limitations=(),
         abstained=False,
         abstention_reason=None,
     )
@@ -314,7 +310,6 @@ def abstention_answer(reason: str = "Sem suporte suficiente no acervo.") -> Gene
     return GeneratedAnswer(
         answer_markdown="",
         claims=(),
-        limitations=(),
         abstained=True,
         abstention_reason=reason,
     )

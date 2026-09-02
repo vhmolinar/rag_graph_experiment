@@ -216,7 +216,12 @@ class VerificationRequest(BaseModel):
 
 
 class ClaimVerdict(BaseModel):
-    """Veredicto de suporte de um par (afirmação, evidência) — SPEC §9.4."""
+    """Veredicto de suporte de um par (afirmação, evidência) — SPEC §9.4.
+
+    T13-FULL-02: a saída do verificador fica reduzida a IDs, flags e códigos —
+    NUNCA texto livre. Descrições de contradição são renderizadas pelo domínio/
+    serviço com texto fixo e não factual.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -224,7 +229,6 @@ class ClaimVerdict(BaseModel):
     evidence_id: UUID
     supported: bool
     contradiction: bool = False
-    detail: str | None = Field(default=None, max_length=2000)
 
 
 class VerificationVerdict(BaseModel):

@@ -48,6 +48,16 @@ packages = ["src/rag"]
 
 [tool.uv]
 package = true
+# T13-FULL-03: `transformers` é transitiva via docling; fixada em 5.10.4 (5.10.0,
+# versão-fixa do CVE-2026-9856, está yanked em PyPI; 5.10.4 é o patch mais recente
+# não yanked que inclui a mesma correção) — atualização de dependência aprovada
+# explicitamente pelo usuário em 2026-09-02 (NOTES.md §19).
+constraint-dependencies = ["transformers==5.10.4"]
+# O ambiente-alvo da fase 1 é Linux ("Docker Compose em uma VM Linux", SPEC §1).
+# `docling-core[chunking]` capa `transformers<5.9.0` em darwin; limitar a
+# resolução a Linux permite aplicar 5.10.0 (CVE-2026-9856) sem conflito no
+# alvo real. Documentado em NOTES.md §19.
+environments = ["sys_platform == 'linux'"]
 
 [tool.ruff]
 target-version = "py312"

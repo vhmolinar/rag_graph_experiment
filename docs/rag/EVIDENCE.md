@@ -18,7 +18,7 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
 | AC-07 | Exclusão de obra vale em todos os estágios | ✅ | T02/T08/T09/T10 cobrem filtros desde o plano até o reranker; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` prova que a exclusão aplicada na recuperação flui à geração, que recebe somente evidências permitidas. |
 | AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem prosa); T12: `test_context.py::TestQuoteContract`, `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` e `test_quote_has_no_generation_path` (verificação estrutural T12-03: nem `quote` nem `assemble` aceitam provedor de geração). |
-| AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ✅ | T02: `test_answer.py::TestClaim`; T13: `test_dissertative_pipeline.py::test_unsupported_claim_is_marked_as_inference`, `test_dissertative.py::TestUnsupportedClaims` e `test_verification.py::TestMarkUnsupportedAsInference`; correções da revisão T13: contradição sempre prevalece sobre `supported` (T13-02: `test_verification.py::test_contradiction_marks_unsupported_even_when_supported_true`, `test_dissertative.py::test_contradiction_with_supported_true_marks_inference`) e Markdown entregue ligado às claims via `blocks` (T13-03: `test_answer.py::TestGeneratedAnswer`, `test_dissertative.py::TestAnswerMarkdownBinding`). |
+| AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ✅ | T02: `test_answer.py::TestClaim`; T13: `test_dissertative_pipeline.py::test_unsupported_claim_is_marked_as_inference`, `test_dissertative.py::TestUnsupportedClaims` e `test_verification.py::TestMarkUnsupportedAsInference`; correções da revisão T13: contradição sempre prevalece sobre `supported` (T13-02: `test_verification.py::test_contradiction_marks_unsupported_even_when_supported_true`, `test_dissertative.py::test_contradiction_with_supported_true_marks_inference`), Markdown entregue ligado às claims via `blocks` (T13-03: `test_answer.py::TestGeneratedAnswer`, `test_dissertative.py::TestAnswerMarkdownBinding`), bloco nulo restrito a whitespace — prosa factual e conteúdo numérico fora das claims rejeitados por construção e no serviço (T13-R2-01/T13-R3-01: `test_answer.py::test_null_block_with_factual_prose_is_rejected`, `test_null_block_with_semantic_content_is_rejected`, `test_whitespace_null_blocks_allowed`, `test_dissertative.py::test_service_rejects_generator_prose_outside_claims`, `test_service_rejects_generator_numeric_content_outside_claims`, `test_generation_adapter.py::test_null_block_with_factual_prose_raises_model_response_error`, `test_null_block_with_numeric_content_raises_model_response_error`); revisão consolidada: `limitations` sai do contrato do gerador — limitações derivadas no serviço (T13-FULL-01: `test_answer.py::test_generated_answer_has_no_limitations_field`, `test_generation_adapter.py::test_model_limitations_are_dropped`, `test_dissertative.py::test_limitations_are_derived_not_generator_prose`) e a saída do verificador fica reduzida a IDs/flags/códigos, com descrição fixa na contradição (T13-FULL-02: `test_verifier_adapter.py::test_verifier_free_text_detail_is_ignored`, `test_verification.py::TestAssessClaims`). |
 | AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer`; T13: `test_dissertative_pipeline.py::test_question_without_support_abstains`, `TestGeneratorAbstention` e `TestUnsupportedClaims::test_low_coverage_forces_abstention`; T13-01: abstenção NUNCA carrega prosa — Markdown vazio, sem blocos/limitações (`test_answer.py::TestGeneratedAnswer::test_abstained_answer_cannot_have_text/limitations/blocks`) e substituição canônica no serviço (`test_dissertative.py::test_generator_abstention_is_replaced_with_canonical`). |
 | AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10/T12 cobrem diversidade adaptativa sem quota cega; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` e `test_dissertative.py::TestComparativeLimitation` cobrem declaração determinística com fonte única. |
 | AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts`, `test_summary_without_support_is_rejected`, `test_summaries_never_serve_as_citations`, `test_concept_leads_to_original_passages`, `test_two_reindexations_never_use_inactive_passages`, `test_enrichment.py::TestValidatedSupports`, `test_cli.py::TestEnrichCommand`; T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable`. |
@@ -1221,6 +1221,63 @@ T13-03), com a via de T13-03 aprovada pelo usuário:
   `test_dissertative.py::TestAnswerMarkdownBinding` (o caminho de correção
   preserva a ligação).
 
+Correção da rodada 2 de revisão T13
+(`docs/rag/review_rounds/REVIEW_T13_ROUND2.md`, T13-R2-01 — crítico):
+
+- **T13-R2-01 (crítico)** — bloco sem `claim_id` restrito a tokens
+  estruturais: `_is_structural_text` proíbe caracteres alfabéticos num bloco
+  nulo (`not any(ch.isalpha() for ch in text)`) — whitespace, pontuação,
+  símbolos e dígitos de Markdown são os únicos tokens permitidos; todo texto
+  natural do modelo deve ser um bloco de afirmação idêntico a uma `Claim`.
+  Defensa em profundidade: `DissertativeService._revalidate_answer` revalida o
+  contrato do gerador antes de qualquer entrega. Evidência:
+  `test_answer.py::test_null_block_with_factual_prose_is_rejected`
+  (reprodutor da revisão), `test_null_block_with_natural_prose_is_rejected`,
+  `test_structural_null_blocks_allowed`,
+  `test_dissertative.py::test_service_rejects_generator_prose_outside_claims`
+  (injeção via `model_construct` → `ModelResponseError`, nada entregue) e
+  `test_generation_adapter.py::test_null_block_with_factual_prose_raises_model_response_error`.
+
+Correção da rodada 3 de revisão T13
+(`docs/rag/review_rounds/REVIEW_T13_ROUND3.md`, T13-R3-01 — crítico):
+
+- **T13-R3-01 (crítico)** — a regra "ausência de letras" ainda permitia
+  conteúdo numérico num bloco nulo (" 2024"). O bloco sem `claim_id` passou a
+  ser restrito a whitespace puro (`_is_whitespace_text(text) = text.isspace()`):
+  NINGÚN conteúdo semântico do modelo (texto, números, datas, quantidades,
+  URLs, emoji, símbolos) pode existir fora de uma `Claim` verificada; a
+  formatação é inserida pelo renderer. Evidência:
+  `test_answer.py::test_null_block_with_semantic_content_is_rejected`
+  (parametrizado: ano/quantidade/porcentagem/data/URL — inclui o reprodutor
+  " 2024"), `test_whitespace_null_blocks_allowed`,
+  `test_dissertative.py::test_service_rejects_generator_numeric_content_outside_claims`
+  e
+  `test_generation_adapter.py::test_null_block_with_numeric_content_raises_model_response_error`.
+
+Correção da revisão consolidada
+(`docs/rag/review_rounds/REVIEW_T13_CONSOLIDATED.md`, T13-FULL-01 a T13-FULL-03;
+vias aprovadas pelo usuário):
+
+- **T13-FULL-01 (crítico)** — `limitations` sai do contrato do gerador:
+  `GeneratedAnswer` já não tem o campo; as limitações são derivadas
+  deterministicamente pelo serviço (`DissertativeService._limitations`, AC-11
+  fonte única) e entregues em `DissertativeAnswer.limitations`. Evidência:
+  `test_answer.py::test_generated_answer_has_no_limitations_field`,
+  `test_generation_adapter.py::test_model_limitations_are_dropped` (campo extra
+  do modelo ignorado) e
+  `test_dissertative.py::test_limitations_are_derived_not_generator_prose`.
+- **T13-FULL-02 (alto)** — a saída do verificador fica reduzida a IDs, flags e
+  códigos: `ClaimVerdict.detail` removido; `Contradiction.detail` é texto fixa
+  e não factual do domínio (`_CONTRADICTION_DETAIL`). Evidência:
+  `test_verifier_adapter.py::test_verifier_free_text_detail_is_ignored` (texto
+  extra do verificador não é exposto) e
+  `test_verification.py::TestAssessClaims` (descrição fixa).
+- **T13-FULL-03 (alto)** — `make audit` passou após fixar `transformers` em
+  `5.10.4` (5.10.0, versão-fixa do CVE-2026-9856, está yanked em PyPI; 5.10.4 é
+  o patch mais recente não yanked) via `[tool.uv].constraint-dependencies`, com
+  a resolução limitada ao ambiente-alvo Linux (`environments`); `make audit`,
+  `make lock` e `make security-scan` verdes.
+
 Comandos executados em 2026-09-02 (Linux; Python 3.12.14; PostgreSQL real via
 testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
 `TESTCONTAINERS_RYUK_DISABLED=true`):
@@ -1230,12 +1287,27 @@ testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.so
 | `uv run ruff check src tests` | OK — All checks passed |
 | `uv run ruff format --check src tests` | OK — 116 arquivos |
 | `uv run mypy src tests` | OK — 116 arquivos, strict, 0 issues |
-| `uv run pytest tests/unit -q` | OK — 558 passed, 3 skipped (e2e opcionais) |
+| `uv run pytest tests/unit -q` | OK — 573 passed, 3 skipped (e2e opcionais) |
 | `uv run pytest tests/integration/test_dissertative_pipeline.py -q` | OK — 7 passed (PostgreSQL real) |
 | `uv run pytest tests/integration -q` | OK — 218 passed, 1 skipped (PostgreSQL real) |
+| `uv run pytest tests/contract -q` | OK — 26 passed |
+| `make audit` | OK — No known vulnerabilities found (backend); npm 0 vulnerabilidades |
+| `make lock` | OK |
+| `make security-scan` | OK — nenhum IOC bloqueado |
+| `make lint` / `make format-check` / `make typecheck` / `make test` | OK — monorepo completo (após `npm ci`; eslint, prettier, tsc, vitest) |
+
+**Aprovação da revisão consolidada rodada 2**
+(`docs/rag/review_rounds/REVIEW_T13_CONSOLIDATED_ROUND2.md`): **aprovado no
+escopo de T13** — sem achados bloqueadores relativos a AC-09, AC-10, AC-11 ou
+AC-14. A limitação não bloqueante da revisão (etapa frontend não reproduzida
+por ausência de `node_modules`) foi atendida nesta sessão: `npm ci` instalou as
+dependências (0 vulnerabilidades, `package-lock.json` inalterado) e os gates
+frontend passaram (`make lint`, `make format-check`, `make typecheck`,
+`make test` — inclui vitest 1 passed).
 
 Critérios: AC-09 (afirmação factual exige evidência ou marcação; contradição
-prevalece; Markdown ligado às claims); AC-10 (abstenção sem prosa — canônica);
+prevalece; Markdown ligado às claims; bloco nulo restrito a whitespace —
+T13-R2-01/T13-R3-01); AC-10 (abstenção sem prosa — canônica);
 AC-11 (limitação determinística para comparativas com fonte única); AC-14
 (timeout do verificador falha fechado — `VerificationError`); AC-15 (versões
 de prompts, endpoints e política de verificação registradas idempotentes).

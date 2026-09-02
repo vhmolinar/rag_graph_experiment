@@ -126,10 +126,10 @@ class TestGenerate:
     async def test_parses_generated_answer(self) -> None:
         request = _request()
         answer_payload = {
-            "answer_markdown": "Resposta. Afirmação.",
+            "answer_markdown": "Afirmação. \n",
             "blocks": [
-                {"text": "Resposta. ", "claim_id": None},
                 {"text": "Afirmação.", "claim_id": "c1"},
+                {"text": " \n", "claim_id": None},
             ],
             "claims": [
                 {
@@ -139,11 +139,10 @@ class TestGenerate:
                     "inference": False,
                 }
             ],
-            "limitations": [],
             "abstained": False,
             "abstention_reason": None,
         }
-        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
             return_value=httpx.Response(200, json=_completion_body(answer_payload))
         )
         provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
@@ -151,22 +150,46 @@ class TestGenerate:
             result = await provider.generate(request)
         finally:
             await provider.aclose()
-        assert result.answer_markdown == "Resposta. Afirmação."
-        assert result.blocks[1].claim_id == "c1"
+        assert result.answer_markdown == "Afirmação. \n"
+        assert result.blocks[1].claim_id is None
         assert result.claims[0].evidence_ids == (request.evidences[0].passage_id,)
-        sent_body = json.loads(route.calls.last.request.content)
-        assert sent_body["model"] == "qwen3-instruct"
-        assert sent_body["response_format"] == {"type": "json_object"}
-        assert sent_body["messages"][0]["role"] == "system"
-        assert sent_body["messages"][1]["role"] == "user"
-        assert str(request.evidences[0].passage_id) in sent_body["messages"][1]["content"]
+
+    @respx.mock
+    async def test_model_limitations_are_dropped(self) -> None:
+        """T13-FULL-01: o gerador NUNCA pode contribuir limitações — um campo
+        "limitations" extra com prosa factual é ignorado; as limitações são
+        derivadas pelo serviço, não pelo modelo."""
+        request = _request()
+        answer_payload = {
+            "answer_markdown": "Afirmação.",
+            "blocks": [{"text": "Afirmação.", "claim_id": "c1"}],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "limitations": ["Marte tem duas luas."],
+            "abstained": False,
+            "abstention_reason": None,
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(answer_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            result = await provider.generate(request)
+        finally:
+            await provider.aclose()
+        assert not hasattr(result, "limitations")
 
     @respx.mock
     async def test_sends_bearer_auth(self) -> None:
         answer_payload = {
             "answer_markdown": "",
             "claims": [],
-            "limitations": [],
             "abstained": True,
             "abstention_reason": "sem suporte",
         }
@@ -187,7 +210,6 @@ class TestGenerate:
         answer_payload = {
             "answer_markdown": "",
             "claims": [],
-            "limitations": [],
             "abstained": True,
             "abstention_reason": "sem suporte",
         }
@@ -289,9 +311,72 @@ class TestGenerate:
         bad_payload = {
             "answer_markdown": "x",
             "claims": [{"id": "c1", "text": "y", "evidence_ids": [], "inference": True}],
-            "limitations": [],
             "abstained": True,
             "abstention_reason": "motivo",
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(bad_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_null_block_with_factual_prose_raises_model_response_error(self) -> None:
+        """T13-R2-01: texto factual num bloco sem `claim_id` viola o contrato —
+        falha fechada no adapter de geração."""
+        request = _request()
+        bad_payload = {
+            "answer_markdown": "Afirmação. Marte tem duas luas.",
+            "blocks": [
+                {"text": "Afirmação.", "claim_id": "c1"},
+                {"text": " Marte tem duas luas.", "claim_id": None},
+            ],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "abstained": False,
+            "abstention_reason": None,
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(bad_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_null_block_with_numeric_content_raises_model_response_error(self) -> None:
+        """T13-R3-01: o reprodutor da rodada 3 — um número num bloco sem
+        `claim_id` (" 2024") viola o contrato; falha fechado no adapter."""
+        request = _request()
+        bad_payload = {
+            "answer_markdown": "Afirmação. 2024",
+            "blocks": [
+                {"text": "Afirmação.", "claim_id": "c1"},
+                {"text": " 2024", "claim_id": None},
+            ],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "abstained": False,
+            "abstention_reason": None,
         }
         respx.post(f"{_BASE_URL}/chat/completions").mock(
             return_value=httpx.Response(200, json=_completion_body(bad_payload))

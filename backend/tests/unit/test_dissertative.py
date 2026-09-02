@@ -21,13 +21,14 @@ from psycopg import AsyncConnection
 
 from rag.application.dissertative import (
     _ABSTENTION_REASON,
+    _SINGLE_SOURCE_LIMITATION,
     DissertativeService,
     _RegisteredVersions,
 )
 from rag.domain.answer import AnswerBlock, Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.context import ContextEvidence, PackedContext
 from rag.domain.enums import Depth, Intent, SearchStrategy, VerificationAction
-from rag.domain.errors import VerificationError
+from rag.domain.errors import ModelResponseError, VerificationError
 from rag.domain.providers import (
     ClaimVerdict,
     GenerationRequest,
@@ -117,15 +118,11 @@ def _answer(
     text: str = "Afirmação sustentada.",
 ) -> GeneratedAnswer:
     claim = Claim(id=claim_id, text=text, evidence_ids=(evidence_id,))
-    blocks = (
-        AnswerBlock(text="Resposta de teste em Markdown: "),
-        AnswerBlock(text=claim.text, claim_id=claim.id),
-    )
+    blocks = (AnswerBlock(text=claim.text, claim_id=claim.id),)
     return GeneratedAnswer(
-        answer_markdown="".join(block.text for block in blocks),
+        answer_markdown=claim.text,
         blocks=blocks,
         claims=(claim,),
-        limitations=(),
         abstained=False,
         abstention_reason=None,
     )
@@ -195,7 +192,6 @@ class TestGeneratorAbstention:
         generator._answer_factory = lambda _request: GeneratedAnswer(
             answer_markdown="",
             claims=(),
-            limitations=(),
             abstained=True,
             abstention_reason="Sem suporte suficiente.",
         )
@@ -225,7 +221,6 @@ class TestGeneratorAbstention:
         generator._answer_factory = lambda _request: GeneratedAnswer(
             answer_markdown="",
             claims=(),
-            limitations=(),
             abstained=True,
             abstention_reason="motivo arbitrário do gerador.",
         )
@@ -310,9 +305,8 @@ class TestUnsupportedClaims:
         evidence_id = packed.evidences[0].evidence.passage_id
         generator = cast(FakeGeneratorProvider, service._generator)
         generator._answer_factory = lambda _request: GeneratedAnswer(
-            answer_markdown="Resposta de teste: Sustentada. Não sustentada.",
+            answer_markdown="Sustentada. Não sustentada.",
             blocks=(
-                AnswerBlock(text="Resposta de teste: "),
                 AnswerBlock(text="Sustentada.", claim_id="c1"),
                 AnswerBlock(text=" "),
                 AnswerBlock(text="Não sustentada.", claim_id="c2"),
@@ -321,7 +315,6 @@ class TestUnsupportedClaims:
                 Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
                 Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
             ),
-            limitations=(),
             abstained=False,
             abstention_reason=None,
         )
@@ -350,9 +343,8 @@ class TestUnsupportedClaims:
         evidence_id = packed.evidences[0].evidence.passage_id
         generator = cast(FakeGeneratorProvider, service._generator)
         generator._answer_factory = lambda _request: GeneratedAnswer(
-            answer_markdown="Resposta de teste: Sustentada. Não sustentada.",
+            answer_markdown="Sustentada. Não sustentada.",
             blocks=(
-                AnswerBlock(text="Resposta de teste: "),
                 AnswerBlock(text="Sustentada.", claim_id="c1"),
                 AnswerBlock(text=" "),
                 AnswerBlock(text="Não sustentada.", claim_id="c2"),
@@ -361,7 +353,6 @@ class TestUnsupportedClaims:
                 Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
                 Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
             ),
-            limitations=(),
             abstained=False,
             abstention_reason=None,
         )
@@ -428,7 +419,6 @@ class TestUnsupportedClaims:
                         evidence_id=evidence_id,
                         supported=True,
                         contradiction=True,
-                        detail="A fonte contradice a afirmação.",
                     ),
                 )
             )
@@ -473,7 +463,6 @@ class TestAnswerMarkdownBinding:
                 Claim(id="c1", text="Sustentada.", evidence_ids=(evidence_id,)),
                 Claim(id="c2", text="Não sustentada.", evidence_ids=(evidence_id,)),
             ),
-            limitations=(),
             abstained=False,
             abstention_reason=None,
         )
@@ -497,6 +486,70 @@ class TestAnswerMarkdownBinding:
         for block in delivered.blocks:
             if block.claim_id is not None:
                 assert claim_by_id[block.claim_id].text == block.text
+
+    async def test_service_rejects_generator_prose_outside_claims(
+        self, service: DissertativeService
+    ) -> None:
+        """T13-R2-01: prosa factual num bloco sem `claim_id` NUNCA chega a uma
+        resposta aceita — o serviço revalida o contrato do gerador (defensa em
+        profundidade) e falha fechado com `ModelResponseError`."""
+        packed = _packed()
+        evidence_id = packed.evidences[0].evidence.passage_id
+        invalid = GeneratedAnswer.model_construct(
+            answer_markdown="A fonte diz X. Marte tem duas luas.",
+            blocks=(
+                AnswerBlock(text="A fonte diz X.", claim_id="c1"),
+                AnswerBlock(text=" Marte tem duas luas.", claim_id=None),
+            ),
+            claims=(Claim(id="c1", text="A fonte diz X.", evidence_ids=(evidence_id,)),),
+            abstained=False,
+            abstention_reason=None,
+        )
+        generator = cast(FakeGeneratorProvider, service._generator)
+        generator._answer_factory = lambda _request: invalid
+        with pytest.raises(ModelResponseError):
+            await service.answer(
+                _conn(),
+                question="Pergunta?",
+                session_context=None,
+                depth=Depth.STANDARD,
+                plan=_plan(),
+                packed=packed,
+                verification_policy=_verification_policy(),
+                model_name="test-model",
+            )
+
+    async def test_service_rejects_generator_numeric_content_outside_claims(
+        self, service: DissertativeService
+    ) -> None:
+        """T13-R3-01: um número num bloco sem `claim_id` (" 2024" — o reprodutor
+        da rodada 3) NUNCA chega a uma resposta aceita — falha fechado com
+        `ModelResponseError`."""
+        packed = _packed()
+        evidence_id = packed.evidences[0].evidence.passage_id
+        invalid = GeneratedAnswer.model_construct(
+            answer_markdown="A fonte contém uma data. 2024",
+            blocks=(
+                AnswerBlock(text="A fonte contém uma data.", claim_id="c1"),
+                AnswerBlock(text=" 2024", claim_id=None),
+            ),
+            claims=(Claim(id="c1", text="A fonte contém uma data.", evidence_ids=(evidence_id,)),),
+            abstained=False,
+            abstention_reason=None,
+        )
+        generator = cast(FakeGeneratorProvider, service._generator)
+        generator._answer_factory = lambda _request: invalid
+        with pytest.raises(ModelResponseError):
+            await service.answer(
+                _conn(),
+                question="Pergunta?",
+                session_context=None,
+                depth=Depth.STANDARD,
+                plan=_plan(),
+                packed=packed,
+                verification_policy=_verification_policy(),
+                model_name="test-model",
+            )
 
 
 class TestVerifierFailure:
@@ -544,7 +597,7 @@ class TestComparativeLimitation:
             verification_policy=_verification_policy(max_iterations=0),
             model_name="test-model",
         )
-        assert any("única obra" in limitation for limitation in outcome.answer.limitations)
+        assert any("única obra" in limitation for limitation in outcome.limitations)
 
     async def test_comparative_two_works_no_limitation(self, service: DissertativeService) -> None:
         packed = _packed(work_ids=(uuid4(), uuid4()))
@@ -561,7 +614,7 @@ class TestComparativeLimitation:
             verification_policy=_verification_policy(max_iterations=0),
             model_name="test-model",
         )
-        assert not any("única obra" in limitation for limitation in outcome.answer.limitations)
+        assert not any("única obra" in limitation for limitation in outcome.limitations)
 
     async def test_factual_single_work_no_limitation(self, service: DissertativeService) -> None:
         packed = _packed(work_ids=(uuid4(),))
@@ -578,7 +631,29 @@ class TestComparativeLimitation:
             verification_policy=_verification_policy(max_iterations=0),
             model_name="test-model",
         )
-        assert outcome.answer.limitations == ()
+        assert outcome.limitations == ()
+
+    async def test_limitations_are_derived_not_generator_prose(
+        self, service: DissertativeService
+    ) -> None:
+        """T13-FULL-01: as limitações entregues são EXACTAMENTE as derivadas
+        deterministicamente pelo serviço (AC-11 fonte única) — o gerador não
+        tem campo `limitations` e nenhuna prosa factual pode chegar por aqui."""
+        packed = _packed(work_ids=(uuid4(),))
+        evidence_id = packed.evidences[0].evidence.passage_id
+        generator = cast(FakeGeneratorProvider, service._generator)
+        generator._answer_factory = lambda _request: _answer(evidence_id)
+        outcome = await service.answer(
+            _conn(),
+            question="Compare X com Y?",
+            session_context=None,
+            depth=Depth.STANDARD,
+            plan=_plan(intent=Intent.COMPARATIVE),
+            packed=packed,
+            verification_policy=_verification_policy(max_iterations=0),
+            model_name="test-model",
+        )
+        assert outcome.limitations == (_SINGLE_SOURCE_LIMITATION,)
 
 
 class TestVersions:

@@ -779,7 +779,7 @@ class TestAnswerRuns:
         claim = Claim(id="c1", text="Spleen é o tédio baudelairiano.", evidence_ids=(passage_a,))
         blocks = (
             AnswerBlock(text=claim.text, claim_id="c1"),
-            AnswerBlock(text=" [c1]"),
+            AnswerBlock(text=" "),
         )
         response = GeneratedAnswer(
             answer_markdown="".join(block.text for block in blocks),

@@ -335,7 +335,6 @@ def _answer_with_claims(evidence_id: UUID) -> GeneratedAnswer:
     c1 = Claim(id="c1", text="Afirmação sustentada.", evidence_ids=(evidence_id,))
     c2 = Claim(id="c2", text="Afirmação não sustentada.", evidence_ids=(evidence_id,))
     blocks = (
-        AnswerBlock(text="Resposta de teste: "),
         AnswerBlock(text=c1.text, claim_id="c1"),
         AnswerBlock(text=" "),
         AnswerBlock(text=c2.text, claim_id="c2"),
@@ -344,23 +343,21 @@ def _answer_with_claims(evidence_id: UUID) -> GeneratedAnswer:
         answer_markdown="".join(block.text for block in blocks),
         blocks=blocks,
         claims=(c1, c2),
-        limitations=(),
         abstained=False,
         abstention_reason=None,
     )
 
 
-def _single_claim_answer(evidence_id: UUID, *, prose: str = "Resposta.") -> GeneratedAnswer:
+def _single_claim_answer(evidence_id: UUID) -> GeneratedAnswer:
     claim = Claim(id="c1", text="Afirmação.", evidence_ids=(evidence_id,))
     blocks = (
-        AnswerBlock(text=f"{prose} "),
         AnswerBlock(text=claim.text, claim_id="c1"),
+        AnswerBlock(text=" "),
     )
     return GeneratedAnswer(
         answer_markdown="".join(block.text for block in blocks),
         blocks=blocks,
         claims=(claim,),
-        limitations=(),
         abstained=False,
         abstention_reason=None,
     )
@@ -381,8 +378,8 @@ async def test_invalid_citation_is_regenerated_with_feedback(db: Database) -> No
         nonlocal calls
         calls += 1
         if request.verification_feedback is None:
-            return _single_claim_answer(invalid_id, prose="Resposta com citação inventada.")
-        return _single_claim_answer(valid_id, prose="Resposta corrigida.")
+            return _single_claim_answer(invalid_id)
+        return _single_claim_answer(valid_id)
 
     service = DissertativeService(
         FakeGeneratorProvider(answer_factory=_factory), FakeVerifierProvider()
@@ -513,7 +510,7 @@ async def test_comparative_with_single_work_declares_limitation(db: Database) ->
             verification_policy=_verification_policy(max_iterations=0),
             model_name="test-model",
         )
-    assert any("única obra" in limitation for limitation in outcome.answer.limitations)
+    assert any("única obra" in limitation for limitation in outcome.limitations)
 
 
 async def test_versions_are_registered(db: Database) -> None:

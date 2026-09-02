@@ -1037,3 +1037,81 @@ Elas complementam o registro §15.
    com `claim_id` para trechos que são afirmações. As respostas do gerador
    continuam validadas como `GeneratedAnswer` (falha fechada se violar o
    contrato).
+
+## 17. Registro do implementador — 2026-09-02 (fase 1, rodada 2 de revisão T13)
+
+Correção aplicada ao corrigir `docs/rag/review_rounds/REVIEW_T13_ROUND2.md`
+(T13-R2-01, crítico — bypass de prosa factual em bloco sem claim_id).
+
+1. **Bloco sem `claim_id` é restrito a tokens estruturais (T13-R2-01).** Em
+   `answer.py`, `_is_structural_text(text)` exige que um bloco nulo NÃO
+   contenga caracteres alfabéticos (`not any(ch.isalpha() for ch in text)`):
+   só whitespace, pontuação, símbolos e dígitos — sintaxe de Markdown
+   controlada pelo servidor. Todo texto natural do modelo deve ser um bloco
+   de afirmação idêntico a uma `Claim`. O reprodutor da revisão
+   ("Marte tem duas luas." em bloco nulo) é rejeitado por construção
+   (AC-09; checklist §12). O contrato de geração foi atualizado em
+   consequência.
+2. **Defensa em profundidade no serviço (T13-R2-01).**
+   `DissertativeService._revalidate_answer` revalida o contrato
+   `GeneratedAnswer` do gerador antes de qualquer entrega
+   (`ModelResponseError` em violação) — mesmo um provedor que contornasse os
+   validators não pode entregar prosa factual fora das claims.
+3. **Testes adversariais adicionados:** domínio (reprodutor da revisão,
+   prosa conectiva, tokens estruturais permitidos), serviço (injeção via
+   `model_construct` → `ModelResponseError`, nada entregue) e adapter de
+   geração (payload com prosa factual em bloco nulo → `ModelResponseError`).
+
+## 18. Registro do implementador — 2026-09-02 (fase 1, rodada 3 de revisão T13)
+
+Correção aplicada ao corrigir `docs/rag/review_rounds/REVIEW_T13_ROUND3.md`
+(T13-R3-01, crítico — conteúdo numérico em bloco sem claim_id).
+
+1. **Bloco sem `claim_id` é restrito a whitespace puro (T13-R3-01).** A
+   regra "ausência de letras" da rodada 2 permitia números/datas/quantidades
+   (" 2024") como "estruturais". `_is_structural_text` foi substituída por
+   `_is_whitespace_text(text) = text.isspace()`: um bloco nulo só pode
+   contener whitespace (separadores/parágrafos inseridos pelo renderer).
+   NINGÚN conteúdo semântico do modelo — texto, números, datas, quantidades,
+   URLs, emoji ou símbolos — é permitido fora de uma `Claim` verificada
+   (AC-09; checklist §12). O reprodutor da rodada 3 é rejeitado por
+   construção. A defensa em profundidade do serviço
+   (`_revalidate_answer`) usa o mesmo validator.
+2. **Contrato de geração atualizado** para declarar `claim_id=null` SÓ para
+   whitespace.
+3. **Testes adversariais de números/datas/quantidades adicionados**:
+   domínio (parametrizado: ano, quantidade, porcentagem, data, URL), serviço
+   (injeção via `model_construct` com " 2024" → `ModelResponseError`) e
+   adapter de geração (payload " 2024" → `ModelResponseError`).
+
+## 19. Registro do implementador — 2026-09-02 (fase 1, revisão consolidada T13)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T13_CONSOLIDATED.md`
+(T13-FULL-01, T13-FULL-02, T13-FULL-03). As vias de correção foram aprovadas
+explicitamente pelo usuário nesta sessão: limitações derivadas no serviço
+(T13-FULL-01) e atualização de `transformers` (T13-FULL-03).
+
+1. **`limitations` sai do contrato do gerador (T13-FULL-01, AC-09).**
+   `GeneratedAnswer` deixou de ter o campo `limitations`: o modelo NÃO pode
+   contribuir prosa factual por esse canal. As limitações são derivadas
+   DETERMINISTICAMENTE pelo serviço (`DissertativeService._limitations`, a
+   partir de condições — hoje: AC-11 fonte única) e entregues em
+   `DissertativeAnswer.limitations`. O contrato de geração declara que não
+   existe campo `limitations`. O campo extra do modelo é ignorado no adapter
+   (nenhuna prosa entregue) — coberto no domínio, no adapter e no serviço.
+2. **A saída do verificador fica reduzida a IDs, flags e códigos
+   (T13-FULL-02, SPEC §9.4).** `ClaimVerdict.detail` foi removido: o provedor
+   não pode introduzir prosa factual. `assess_claims` renderiza uma descrição
+   FIXA e não factual (`_CONTRADICTION_DETAIL`) na `Contradiction.detail`.
+   O contrato de verificação declara que não há campo `detail`; texto extra do
+   verificador é ignorado (nenhuna prosa exposta nem persistida).
+3. **`transformers` fixada em 5.10.4 (T13-FULL-03, aprovado).** A revisão
+   achou `CVE-2026-9856` em `transformers 5.8.1` (transitiva via docling;
+   versão-fixa 5.10.0). `5.10.0` está yanked em PyPI ("pushed from a week old
+   main branch"); pinada `5.10.4` (patch mais recente não yanked que inclui a
+   mesma correção) via `[tool.uv].constraint-dependencies`. Como
+   `docling-core[chunking]` capa `transformers<5.9.0` em darwin, a resolução
+   foi limitada ao ambiente-alvo da fase 1 (`environments =
+   ["sys_platform == 'linux'"]`, SPEC §1: "Docker Compose em uma VM Linux");
+   `make audit` passou sem vulnerabilidades. O lockfile removou pacotes de
+   outros plataformas (colorama, pywin32, tzdata) por desenho da limitação.

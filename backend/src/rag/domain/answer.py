@@ -4,13 +4,17 @@ Garantias estruturais:
 - `QuoteResponse` não possui nenhum campo de prosa — só trechos literais e
   metadados (AC-08). Síntese é impossível por construção de tipo.
 - `Claim` factual exige ao menos uma evidência; inferências são marcadas (AC-09).
-- Abstenção exige razão e não carrega texto, afirmações, blocos nem limitações
-  (AC-10).
+- Abstenção exige razão e não carrega texto, afirmações nem blocos (AC-10).
+- `GeneratedAnswer` NÃO expõe `limitations` (T13-FULL-01): as limitações são
+  derivadas deterministicamente pelo serviço, nunca texto livre do gerador.
 - `GeneratedAnswer` liga o texto visível (`answer_markdown`) às afirmações
-  verificadas via `blocks` (T13-03): a concatenação dos blocos reproduz o
-  Markdown exatamente, cada bloco de afirmação corresponde verbatim à uma
-  afirmação e cada afirmação aparece como bloco — nenhuna prosa factual pode
-  atravessar o caminho de verificação sem estar ligada a uma `Claim`.
+  verificadas via `blocks` (T13-03, T13-R2-01, T13-R3-01): a concatenação dos
+  blocos reproduz o Markdown exatamente, cada bloco de afirmação corresponde
+  verbatim à uma afirmação, cada afirmação aparece como bloco, e um bloco sem
+  `claim_id` só pode contener whitespace (formatação inserida pelo renderer —
+  NUNCA conteúdo semântico do modelo, nem texto, números, datas, quantidades,
+  URLs ou símbolos) — nenhuna prosa factual pode atravessar o caminho de
+  verificação sem estar ligada a uma `Claim`.
 """
 
 from typing import Self
@@ -19,6 +23,18 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rag.domain.enums import VerificationAction
+
+
+def _is_whitespace_text(text: str) -> bool:
+    """Verdadeiro quando `text` é só whitespace (T13-R3-01).
+
+    Um bloco sem `claim_id` não pode transportar NINGÚN conteúdo semântico do
+    modelo — nem texto, nem números, datas, quantidades, URLs, emoji ou
+    símbolos. Só whitespace (separadores/parágrafos inseridos pelo renderer)
+    é permitido; todo conteúdo semântico deve pertencer a uma `Claim`
+    verificada (AC-09).
+    """
+    return text.isspace()
 
 
 class Claim(BaseModel):
@@ -37,12 +53,13 @@ class Claim(BaseModel):
 
 
 class AnswerBlock(BaseModel):
-    """Bloco que compõe `answer_markdown` (T13-03).
+    """Bloco que compõe `answer_markdown` (T13-03, T13-R2-01, T13-R3-01).
 
     A resposta dissertativa é uma sequência de blocos cuja concatenação
-    reproduz EXACTAMENTE `answer_markdown`. Cada bloco ou é prosa conectiva/
-    estructural (`claim_id` nulo) ou é uma afirmação verificada (`claim_id`
-    referencia a `claims`, com `text` idêntico ao da afirmação). A cobertura
+    reproduz EXACTAMENTE `answer_markdown`. Cada bloco ou é uma afirmação
+    verificada (`claim_id` referencia a `claims`, com `text` idêntico ao da
+    afirmação) ou é whitespace puro (`claim_id` nulo — separadores/parágrafos
+    inseridos pelo renderer, validado por `_is_whitespace_text`). A cobertura
     completa é validada em `GeneratedAnswer._blocks_cover_answer_markdown`.
     """
 
@@ -53,14 +70,19 @@ class AnswerBlock(BaseModel):
 
 
 class GeneratedAnswer(BaseModel):
-    """Resposta dissertativa. Frozen com coleções imutáveis (RR02)."""
+    """Resposta dissertativa. Frozen com coleções imutáveis (RR02).
+
+    `limitations` NÃO é um campo do contrato do gerador (T13-FULL-01): o
+    serviço deriva as limitações deterministicamente a partir de condições
+    (ex.: AC-11 fonte única) e entrega-as em `DissertativeAnswer` — nenhuna
+    prosa factual do modelo pode atravessar por esse canal sem verificação.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     answer_markdown: str
     blocks: tuple[AnswerBlock, ...] = Field(default_factory=tuple, max_length=500)
     claims: tuple[Claim, ...] = Field(default_factory=tuple, max_length=200)
-    limitations: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     abstained: bool
     abstention_reason: str | None = Field(default=None, max_length=2000)
 
@@ -73,8 +95,6 @@ class GeneratedAnswer(BaseModel):
                 raise ValueError("resposta abstida não pode conter afirmações")
             if self.blocks:
                 raise ValueError("resposta abstida não pode conter blocos")
-            if self.limitations:
-                raise ValueError("resposta abstida não pode conter limitações")
             if self.answer_markdown.strip():
                 # T13-01: a abstenção NUNCA carrega prosa factual arbitrária.
                 raise ValueError("resposta abstida não pode conter texto (AC-10)")
@@ -87,13 +107,17 @@ class GeneratedAnswer(BaseModel):
 
     @model_validator(mode="after")
     def _blocks_cover_answer_markdown(self) -> Self:
-        """T13-03: o texto visível fica ligado às afirmações verificadas.
+        """T13-03/T13-R2-01/T13-R3-01: o texto visível fica ligado às
+        afirmações verificadas.
 
         - a concatenação dos blocos reproduz `answer_markdown` (nenhuna prosa
           factual pode existir fora dos blocos — falha fechada);
         - cada bloco de afirmação corresponde verbatim à uma `Claim`;
         - cada `Claim` aparece como bloco (nenhuna afirmação verificada fica
-          invisível no texto entregue).
+          invisível no texto entregue);
+        - um bloco sem `claim_id` NÃO pode transportar NINGÚN conteúdo
+          semântico do modelo: só whitespace é permitido (T13-R3-01) — nem
+          texto, números, datas, quantidades, URLs ou símbolos.
         """
         if self.abstained:
             return self
@@ -105,6 +129,12 @@ class GeneratedAnswer(BaseModel):
         referenced: set[str] = set()
         for block in self.blocks:
             if block.claim_id is None:
+                if not _is_whitespace_text(block.text):
+                    raise ValueError(
+                        "bloco sem claim_id só pode contener whitespace — todo "
+                        "conteúdo semântico (texto, números, datas, quantidades) "
+                        "deve ser uma afirmação verificada (T13-R3-01)"
+                    )
                 continue
             claim = claim_by_id.get(block.claim_id)
             if claim is None:

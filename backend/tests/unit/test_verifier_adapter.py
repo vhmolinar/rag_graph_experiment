@@ -80,7 +80,6 @@ class TestVerify:
                     "evidence_id": str(evidence_id),
                     "supported": True,
                     "contradiction": False,
-                    "detail": None,
                 }
             ]
         }
@@ -113,7 +112,6 @@ class TestVerify:
                     "evidence_id": str(evidence_id),
                     "supported": False,
                     "contradiction": True,
-                    "detail": "A fonte afirma o oposto.",
                 }
             ]
         }
@@ -127,7 +125,34 @@ class TestVerify:
             await provider.aclose()
         assert not outcome.verdicts[0].supported
         assert outcome.verdicts[0].contradiction
-        assert outcome.verdicts[0].detail == "A fonte afirma o oposto."
+
+    @respx.mock
+    async def test_verifier_free_text_detail_is_ignored(self) -> None:
+        """T13-FULL-02: texto livre num campo extra "detail" do verificador é
+        ignorado — a saída do provedor fica reduzida a IDs, flags e códigos;
+        nenhuna prosa do verificador chega ao domínio."""
+        evidence_id = uuid4()
+        result = {
+            "verdicts": [
+                {
+                    "claim_id": "c1",
+                    "evidence_id": str(evidence_id),
+                    "supported": False,
+                    "contradiction": True,
+                    "detail": "Marte tem duas luas.",
+                }
+            ]
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(result))
+        )
+        provider = OpenAiCompatibleVerifierProvider(_settings(), sleep=_noop_sleep)
+        try:
+            outcome = await provider.verify(_verify_request())
+        finally:
+            await provider.aclose()
+        assert outcome.verdicts[0].contradiction
+        assert not hasattr(outcome.verdicts[0], "detail")
 
     @respx.mock
     async def test_authorization_header_sent(self) -> None:
