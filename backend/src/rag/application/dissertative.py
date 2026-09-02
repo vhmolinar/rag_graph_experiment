@@ -17,19 +17,22 @@ Regras estruturais (NOTES.md §10.14):
 - NUNCA se devolve uma citação fabricada (ID inexistente): após o limite de
   regenerações, `VerificationError` (SPEC §9.4);
 - NUNCA se usa conhecimento externo do modelo como fallback (SPEC §2) — não
-  existe caminho alternativo de geração.
+  existe caminho alternativo de geração;
+- NUNCA se confia no gerador além do contrato `GeneratedAnswer` (T13-R2-01):
+  a resposta é revalida antes de qualquer entrega — prosa factual fora das
+  claims falha fechado (`ModelResponseError`).
 """
 
 from dataclasses import dataclass
 from uuid import UUID
 
 from psycopg import AsyncConnection
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rag.domain.answer import GeneratedAnswer, VerificationResult
 from rag.domain.context import PackedContext
 from rag.domain.enums import Depth, Intent, VerificationAction
-from rag.domain.errors import VerificationError
+from rag.domain.errors import ModelResponseError, VerificationError
 from rag.domain.identifiers import sha256_of_text
 from rag.domain.providers import (
     GenerationRequest,
@@ -62,14 +65,22 @@ _GENERATION_POLICY = (
 )
 
 _GENERATION_OUTPUT_CONTRACT = (
-    'Devolva um objeto JSON com "answer_markdown" (resposta em Markdown, '
-    'referenciando as evidências pelos seus IDs), "claims" (lista de objetos '
-    'com "id" (string), "text" (afirmação em português), "evidence_ids" (lista '
-    "de UUIDs EXACTAMENTE como informados; vazio se inference=true) e "
-    '"inference" (bool, marca afirmações inferidas sem suporte direto)), '
-    '"limitations" (lista de limitações da resposta, ex.: fonte única '
-    'consultada) e "abstained"/"abstention_reason" (abstenção se as evidências '
-    "não sustentarem resposta)."
+    'Devolva um objeto JSON com "answer_markdown" (resposta em Markdown), '
+    '"blocks" (lista de blocos cuja concatenação reproduz EXACTAMENTE '
+    'answer_markdown: cada bloco é um objeto com "text" (trecho exato do '
+    'Markdown) e "claim_id" (ID da afirmação se o trecho for a afirmação; '
+    "null SÓ para whitespace — separadores/parágrafos inseridos pelo "
+    "renderer; NUNCA para conteúdo semântico: texto, números, datas, "
+    "quantidades, URLs ou símbolos devem pertencer a uma afirmação com "
+    "claim_id e text IDÊNTICO ao da afirmação)), "
+    '"claims" (lista de objetos com "id" (string), "text" (afirmação em '
+    'português; para blocos de afirmação, "text" deve ser IDÊNTICO ao do '
+    'bloco), "evidence_ids" (lista de UUIDs EXACTAMENTE como informados; '
+    'vazio se inference=true) e "inference" (bool, marca afirmações '
+    'inferidas sem suporte direto)) e "abstained"/"abstention_reason" '
+    "(abstenção se as evidências não sustentarem resposta; em abstenção, "
+    'answer_markdown deve ser vazio). NON existe campo "limitations" — as '
+    "limitações da resposta são derivadas pelo serviço (T13-FULL-01)."
 )
 
 _VERIFICATION_POLICY = (
@@ -81,10 +92,10 @@ _VERIFICATION_POLICY = (
 
 _VERIFICATION_OUTPUT_CONTRACT = (
     'Devolva um objeto JSON com "verdicts": lista de objetos com "claim_id" '
-    '(string), "evidence_id" (string UUID), "supported" (bool), '
-    '"contradiction" (bool, padrão false) e "detail" (string opcional, breve). '
-    "Emita um veredicto para CADA par (afirmação, evidência) citado em "
-    "evidence_ids."
+    '(string), "evidence_id" (string UUID), "supported" (bool) e '
+    '"contradiction" (bool, padrão false). Emita um veredicto para CADA par '
+    "(afirmação, evidência) citado em evidence_ids. NON incluas texto livre "
+    "— as descrições são renderizadas pelo serviço (T13-FULL-02)."
 )
 
 _SINGLE_SOURCE_LIMITATION = (
@@ -105,12 +116,18 @@ class _RegisteredVersions:
 
 
 class DissertativeAnswer(BaseModel):
-    """Resultado do modo dissertativo: resposta verificada + versões registradas
-    (AC-15; a integração completa em `AnswerRun` fica para T18)."""
+    """Resultado do modo dissertativo: resposta verificada + limitações
+    derivadas deterministicamente + versões registradas (AC-15; a integração
+    completa em `AnswerRun` fica para T18).
+
+    T13-FULL-01: `limitations` é calculada pelo SERVIÇO a partir de condições
+    determinísticas (ex.: AC-11 fonte única) — nunca texto livre do gerador.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     answer: GeneratedAnswer
+    limitations: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     verification: VerificationResult
     generator_endpoint_version_id: UUID
     verifier_endpoint_version_id: UUID
@@ -161,13 +178,25 @@ class DissertativeService:
             if feedback is not None:
                 request = request.model_copy(update={"verification_feedback": feedback})
             answer = await self._generator.generate(request)
+            # T13-R2-01: defensa em profundidade — o serviço NUNCA confia no
+            # gerador além do contrato `GeneratedAnswer`; prosa factual fora
+            # das claims não chega a nenhuma resposta aceita.
+            answer = self._revalidate_answer(answer)
             result = await self._verify(answer, request, allowed_ids, budget, iteration, versions)
             if answer.abstained:
-                # Abstenção do gerador: nenhumas afirmações a verificar (NOTES.md §10.14 item 8).
-                return self._build_dissertative_answer(answer, result, versions)
+                # Abstenção do gerador: nenhumas afirmações a verificar
+                # (NOTES.md §10.14 item 8). T13-01: o serviço entrega SÓ a
+                # forma canônica — nenhuna prosa do gerador (nem o seu
+                # abstention_reason) atravessa o caminho de abstenção.
+                return self._build_dissertative_answer(
+                    _abstained_answer(_ABSTENTION_REASON), result, versions
+                )
             if self._acceptable(result):
-                final = self._ensure_comparative_limitation(answer, plan, packed)
-                return self._build_dissertative_answer(final, result, versions)
+                # T13-FULL-01: as limitações são derivadas no serviço, nunca do
+                # gerador.
+                return self._build_dissertative_answer(
+                    answer, result, versions, self._limitations(plan, packed)
+                )
             if iteration < budget.max_iterations:
                 feedback = self._build_feedback(result)
                 continue
@@ -260,9 +289,10 @@ class DissertativeService:
             )
         if result.citation_coverage >= budget.support_threshold:
             corrected = mark_unsupported_as_inference(answer, set(result.unsupported_claim_ids))
-            corrected = self._ensure_comparative_limitation(corrected, plan, packed)
             corrected_result = result.model_copy(update={"action": VerificationAction.CORRECTED})
-            return self._build_dissertative_answer(corrected, corrected_result, versions)
+            return self._build_dissertative_answer(
+                corrected, corrected_result, versions, self._limitations(plan, packed)
+            )
         return self._forced_abstention(versions, budget, result=result)
 
     def _forced_abstention(
@@ -285,6 +315,23 @@ class DissertativeService:
         else:
             result = result.model_copy(update={"action": VerificationAction.FORCED_ABSTENTION})
         return self._build_dissertative_answer(abstained, result, versions)
+
+    @staticmethod
+    def _revalidate_answer(answer: GeneratedAnswer) -> GeneratedAnswer:
+        """T13-R2-01: revalida o contrato do gerador antes de qualquer entrega.
+
+        Defensa em profundidade: o provedor de geração devolve um
+        `GeneratedAnswer` já validado, mas o serviço NUNCA confia além do
+        contrato — uma resposta com prosa factual fora das claims (bloco sem
+        `claim_id` com texto natural) falha fechado (`ModelResponseError`).
+        """
+        try:
+            return GeneratedAnswer.model_validate(answer.model_dump(mode="python"))
+        except ValidationError as exc:
+            raise ModelResponseError(
+                "Resposta do gerador não corresponde ao contrato GeneratedAnswer.",
+                cause=exc,
+            ) from exc
 
     @staticmethod
     def _acceptable(result: VerificationResult) -> bool:
@@ -318,24 +365,21 @@ class DissertativeService:
         return "\n".join(parts)
 
     @staticmethod
-    def _ensure_comparative_limitation(
-        answer: GeneratedAnswer,
-        plan: QueryPlan,
-        packed: PackedContext,
-    ) -> GeneratedAnswer:
-        """AC-11: pergunta comparativa não é respondida com evidências de somente
-        uma obra sem declarar a limitação. Garantia determinística do serviço
-        (NOTES.md §10.14 item 7), independente do gerador."""
+    def _limitations(plan: QueryPlan, packed: PackedContext) -> tuple[str, ...]:
+        """T13-FULL-01: limitações derivadas no serviço a partir de condições
+        determinísticas — NUNCA texto livre do gerador.
+
+        AC-11: pergunta comparativa não é respondida com evidências de somente
+        uma obra sem declarar a limitação (NOTES.md §10.14 item 7). Condições
+        novas podem acrescentar entradas aqui; cada entrada é texto fixo do
+        serviço, não factual do modelo.
+        """
         if plan.intent is not Intent.COMPARATIVE:
-            return answer
+            return ()
         works = {item.evidence.work_id for item in packed.evidences}
         if len(works) >= 2:
-            return answer
-        if _SINGLE_SOURCE_LIMITATION in answer.limitations:
-            return answer
-        data = answer.model_dump(mode="python")
-        data["limitations"] = (*answer.limitations, _SINGLE_SOURCE_LIMITATION)
-        return GeneratedAnswer.model_validate(data)
+            return ()
+        return (_SINGLE_SOURCE_LIMITATION,)
 
     @staticmethod
     def _scope_description(plan: QueryPlan, packed: PackedContext) -> str:
@@ -417,9 +461,11 @@ class DissertativeService:
         answer: GeneratedAnswer,
         result: VerificationResult,
         versions: _RegisteredVersions,
+        limitations: tuple[str, ...] = (),
     ) -> DissertativeAnswer:
         return DissertativeAnswer(
             answer=answer,
+            limitations=limitations,
             verification=result,
             generation_prompt_version_id=versions.generation_prompt_version_id,
             verification_prompt_version_id=versions.verification_prompt_version_id,
@@ -433,7 +479,6 @@ def _abstained_answer(reason: str) -> GeneratedAnswer:
     return GeneratedAnswer(
         answer_markdown="",
         claims=(),
-        limitations=(),
         abstained=True,
         abstention_reason=reason,
     )

@@ -5,6 +5,7 @@ Ingestão real (T05) primeiro produz a edição + artefato no store; depois
 fake (determinístico, sem rede).
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -17,11 +18,17 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 from builders import make_epub, make_text_pdf
 
-from rag.application.index import IndexingService
+from rag.application.index import IndexingService, IndexReport
 from rag.application.ingest import IngestionService, load_metadata
 from rag.domain.chunking import ChunkingParams
 from rag.domain.enums import IngestionStatus
-from rag.domain.errors import EmbeddingDimensionError, NotFoundError
+from rag.domain.errors import (
+    EmbeddingDimensionError,
+    IngestionError,
+    ModelUnavailableError,
+    NotFoundError,
+)
+from rag.domain.identifiers import sha256_of_text
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
@@ -74,6 +81,24 @@ class _CountMismatchEmbeddingProvider:
 
     async def embed_query(self, text: str) -> list[float]:
         return [0.0] * EMBEDDING_COLUMN_DIMENSIONS
+
+
+class _FailsOnSecondBatchEmbeddingProvider:
+    """T6-06: falha a meio caminho de uma indexação em lotes — usado para
+    provar que nenhum índice parcial é publicado."""
+
+    def __init__(self, dimensions: int = EMBEDDING_COLUMN_DIMENSIONS) -> None:
+        self.dimensions = dimensions
+        self.calls = 0
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        if self.calls == 2:
+            raise ModelUnavailableError("falha simulada no segundo lote")
+        return [[float(i + 1)] * self.dimensions for i in range(len(texts))]
+
+    async def embed_query(self, text: str) -> list[float]:
+        return [1.0] * self.dimensions
 
 
 def _write_metadata(path: Path, *, title: str = "Livro Fixture") -> Path:
@@ -231,9 +256,12 @@ class TestIndexEdition:
         assert not second.created
         assert len(provider.calls) == 1  # segunda chamada nem gerou embeddings
 
-    async def test_force_reindexes_and_replaces_passages(
+    async def test_force_reindexes_preserves_passage_history(
         self, db: Database, tmp_path: Path
     ) -> None:
+        """T6-01: `--force` minta uma execução NOVA sem apagar a antiga —
+        um `AnswerRun` que referencie IDs da primeira execução continua
+        reproduzível depois do `--force`."""
         edition_id = await _ingest_epub(db, tmp_path)
         provider = _FakeEmbeddingProvider()
         service = _service(tmp_path, provider)
@@ -256,12 +284,33 @@ class TestIndexEdition:
         assert first.created
         assert forced.created
         assert forced.forced
+        assert forced.index_run_id != first.index_run_id
         assert len(provider.calls) == 2
         async with db.connection() as conn, conn.cursor() as cur:
             await cur.execute("SELECT count(*) FROM passages WHERE edition_id = %s", (edition_id,))
-            row = await cur.fetchone()
-        assert row is not None
-        assert row[0] == forced.parents + forced.children
+            total_row = await cur.fetchone()
+            await cur.execute(
+                "SELECT count(*) FROM passages WHERE index_run_id = %s", (first.index_run_id,)
+            )
+            first_run_row = await cur.fetchone()
+            await cur.execute(
+                "SELECT is_active FROM index_runs WHERE id = %s", (first.index_run_id,)
+            )
+            first_run_active = await cur.fetchone()
+            await cur.execute(
+                "SELECT is_active FROM index_runs WHERE id = %s", (forced.index_run_id,)
+            )
+            forced_run_active = await cur.fetchone()
+        assert total_row is not None
+        assert first_run_row is not None
+        assert first_run_active is not None
+        assert forced_run_active is not None
+        # histórico preservado: NADA foi apagado fisicamente.
+        assert total_row[0] == first.parents + first.children + forced.parents + forced.children
+        assert first_run_row[0] == first.parents + first.children
+        # só a execução mais recente fica ativa.
+        assert first_run_active[0] is False
+        assert forced_run_active[0] is True
 
     async def test_different_chunking_params_create_new_version(
         self, db: Database, tmp_path: Path
@@ -286,6 +335,255 @@ class TestIndexEdition:
                 embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
             )
         assert first.chunking_version_id != second.chunking_version_id
+
+    async def test_different_chunking_params_same_edition_creates_new_run_without_force(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """T6-01: parâmetros novos são executados mesmo sem `--force` — a
+        idempotência olha para a identidade completa da execução, não para
+        a mera existência de passagens."""
+        edition_id = await _ingest_epub(db, tmp_path)
+        provider = _FakeEmbeddingProvider()
+        service = _service(tmp_path, provider)
+        async with db.connection() as conn:
+            first = await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(),
+                embedding_model_name="fake-model",
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            )
+            second = await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(child_target_tokens=999),
+                embedding_model_name="fake-model",
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            )
+        assert first.created
+        assert second.created
+        assert not second.forced
+        assert second.chunking_version_id != first.chunking_version_id
+        assert second.index_run_id != first.index_run_id
+        assert len(provider.calls) == 2
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM passages WHERE edition_id = %s", (edition_id,))
+            row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == first.parents + first.children + second.parents + second.children
+
+    async def test_different_embedding_model_same_edition_creates_new_run_without_force(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        edition_id = await _ingest_epub(db, tmp_path)
+        provider = _FakeEmbeddingProvider()
+        service = _service(tmp_path, provider)
+        async with db.connection() as conn:
+            first = await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(),
+                embedding_model_name="fake-model",
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            )
+            second = await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(),
+                embedding_model_name="outro-modelo",
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            )
+        assert first.created
+        assert second.created
+        assert second.embedding_version_id != first.embedding_version_id
+        assert second.index_run_id != first.index_run_id
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM index_runs WHERE edition_id = %s AND is_active",
+                (edition_id,),
+            )
+            active_row = await cur.fetchone()
+        assert active_row is not None
+        assert active_row[0] == 1
+
+    async def test_concurrent_indexing_same_edition_does_not_race(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """T6-10: duas indexações concorrentes da mesma edição são
+        serializadas por um lock por edição — a segunda observa a execução
+        já ativa em vez de competir por uma restrição de unicidade."""
+        edition_id = await _ingest_epub(db, tmp_path)
+        provider = _FakeEmbeddingProvider()
+        service = _service(tmp_path, provider)
+
+        async def _run() -> IndexReport:
+            async with db.connection() as conn:
+                return await service.index_edition(
+                    conn,
+                    edition_id=edition_id,
+                    chunking_params=ChunkingParams(),
+                    embedding_model_name="fake-model",
+                    embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                )
+
+        first, second = await asyncio.gather(_run(), _run())
+        assert {first.created, second.created} == {True, False}
+        assert len(provider.calls) == 1
+        winner = first if first.created else second
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM passages WHERE edition_id = %s", (edition_id,))
+            passages_row = await cur.fetchone()
+            await cur.execute(
+                "SELECT count(*) FROM index_runs WHERE edition_id = %s AND is_active",
+                (edition_id,),
+            )
+            active_runs_row = await cur.fetchone()
+        assert passages_row is not None
+        assert active_runs_row is not None
+        assert passages_row[0] == winner.parents + winner.children
+        assert active_runs_row[0] == 1
+
+    async def test_embeddings_are_generated_in_configurable_batches(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        edition_id = await _ingest_epub(db, tmp_path)
+        provider = _FakeEmbeddingProvider()
+        service = _service(tmp_path, provider)
+        async with db.connection() as conn:
+            report = await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(),
+                embedding_model_name="fake-model",
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                batch_size=1,
+            )
+        assert report.children >= 2
+        assert len(provider.calls) == report.children
+        assert all(len(call) == 1 for call in provider.calls)
+
+    async def test_batch_failure_leaves_no_partial_index(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        edition_id = await _ingest_epub(db, tmp_path)
+        provider = _FailsOnSecondBatchEmbeddingProvider()
+        service = _service(tmp_path, provider)
+        async with db.connection() as conn:
+            with pytest.raises(ModelUnavailableError):
+                await service.index_edition(
+                    conn,
+                    edition_id=edition_id,
+                    chunking_params=ChunkingParams(),
+                    embedding_model_name="fake-model",
+                    embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                    batch_size=1,
+                )
+        assert provider.calls == 2  # confirma que o segundo lote foi de fato tentado
+        async with db.connection() as conn:
+            passages = await PassagesRepository(conn).list_by_edition(edition_id)
+            edition = await EditionsRepository(conn).get(edition_id)
+        assert passages == []
+        assert edition is not None
+        assert edition.ingestion_status is not IngestionStatus.INDEXED
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM index_runs WHERE edition_id = %s", (edition_id,)
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
+
+    async def test_original_text_preserves_source_blocks_for_multi_paragraph_epub_chunk(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        edition_id = await _ingest_epub(db, tmp_path)
+        service = _service(tmp_path, _FakeEmbeddingProvider())
+        async with db.connection() as conn:
+            await service.index_edition(
+                conn,
+                edition_id=edition_id,
+                chunking_params=ChunkingParams(),
+                embedding_model_name="fake-model",
+                embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            )
+            passages = await PassagesRepository(conn).list_by_edition(edition_id)
+        assert passages
+        for passage in passages:
+            assert passage.original_text is not None
+            assert passage.citable_text == passage.original_text
+        multi_paragraph = [p for p in passages if p.original_text and "\n" in p.original_text]
+        assert multi_paragraph, "esperava ao menos um chunk cobrindo os 2 parágrafos do capítulo I"
+        for passage in multi_paragraph:
+            original_text = passage.original_text
+            assert original_text is not None
+            assert original_text != passage.text
+            assert "Primeira frase do capitulo um." in original_text
+            assert "Segunda frase do capitulo um." in original_text
+
+    async def test_reextraction_diverging_from_persisted_pages_fails_closed(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """T6-02: uma reextração que produza conteúdo de página diferente do
+        que foi persistido na ingestão original falha fechado, sem tocar
+        chunking, embeddings ou o status da edição."""
+        edition_id = await _ingest_pdf(db, tmp_path)
+        adulterated_text = "texto de página adulterado, divergente da extração original"
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE pages SET text = %s, text_sha256 = %s "
+                "WHERE edition_id = %s AND physical_index = 0",
+                (adulterated_text, sha256_of_text(adulterated_text), edition_id),
+            )
+        service = _service(tmp_path, _FakeEmbeddingProvider())
+        async with db.connection() as conn:
+            with pytest.raises(IngestionError):
+                await service.index_edition(
+                    conn,
+                    edition_id=edition_id,
+                    chunking_params=ChunkingParams(),
+                    embedding_model_name="fake-model",
+                    embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                )
+        async with db.connection() as conn:
+            passages = await PassagesRepository(conn).list_by_edition(edition_id)
+            edition = await EditionsRepository(conn).get(edition_id)
+        assert passages == []
+        assert edition is not None
+        assert edition.ingestion_status is not IngestionStatus.INDEXED
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM index_runs WHERE edition_id = %s", (edition_id,)
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
+
+    async def test_reextraction_diverging_from_persisted_sections_fails_closed(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        edition_id = await _ingest_pdf(db, tmp_path)
+        async with db.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE sections SET title = 'TÍTULO ADULTERADO' "
+                "WHERE edition_id = %s AND ordinal = 0",
+                (edition_id,),
+            )
+        service = _service(tmp_path, _FakeEmbeddingProvider())
+        async with db.connection() as conn:
+            with pytest.raises(IngestionError):
+                await service.index_edition(
+                    conn,
+                    edition_id=edition_id,
+                    chunking_params=ChunkingParams(),
+                    embedding_model_name="fake-model",
+                    embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+                )
+        async with db.connection() as conn:
+            passages = await PassagesRepository(conn).list_by_edition(edition_id)
+            edition = await EditionsRepository(conn).get(edition_id)
+        assert passages == []
+        assert edition is not None
+        assert edition.ingestion_status is not IngestionStatus.INDEXED
 
     async def test_embedding_dimension_mismatch_fails_before_persisting(
         self, db: Database, tmp_path: Path

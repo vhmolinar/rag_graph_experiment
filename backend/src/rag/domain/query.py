@@ -157,6 +157,11 @@ class QueryPlan(BaseModel):
     justificativa estruturada em `strategy_explanation` (SPEC §8.3).
     `lexical_query` é a consulta lexical estruturada (T08) directamente
     executável por `RetrievalService`.
+
+    `inferred_filters` volta ao cliente como chips editáveis (SPEC §8.3);
+    `effective_filters` é o filtro decidido com a prioridade EXPLÍCITA
+    aplicada (`merge_filters`) — o escopo pronto que a recuperação deve
+    consumir (SPEC §8.2, AC-07).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -170,6 +175,7 @@ class QueryPlan(BaseModel):
     aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     concept_labels: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     inferred_filters: EditionFilter = Field(default_factory=EditionFilter)
+    effective_filters: EditionFilter = Field(default_factory=EditionFilter)
     needs_diversity: bool = False
     needs_hierarchical: bool = False
 

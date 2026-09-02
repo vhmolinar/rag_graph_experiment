@@ -34,9 +34,15 @@ from rag.domain.chunking import ChunkingParams
 from rag.domain.enums import ConceptState, SummaryScope
 from rag.domain.errors import IngestionError, ModelResponseError, NotFoundError
 from rag.domain.providers import ExtractedConcepts, SummaryResult
+from rag.domain.versions import EmbeddingVersion, utcnow
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.db import Database
-from rag.infrastructure.repositories.enrichment import ConceptsRepository, SummariesRepository
+from rag.infrastructure.repositories.enrichment import (
+    ConceptsRepository,
+    EnrichmentRunsRepository,
+    SummariesRepository,
+)
+from rag.infrastructure.repositories.index_runs import IndexRunsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
 from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
@@ -46,6 +52,15 @@ pytestmark = pytest.mark.integration
 class _FakeEmbeddingProvider:
     def __init__(self, dimensions: int = EMBEDDING_COLUMN_DIMENSIONS) -> None:
         self.dimensions = dimensions
+
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="enrichment-fake-embedding",
+            model_name="fake-model",
+            dimensions=self.dimensions,
+            created_at=utcnow(),
+        )
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[float(i + 1)] * self.dimensions for i in range(len(texts))]
@@ -85,7 +100,7 @@ async def _ingest_epub(db: Database, tmp_path: Path) -> UUID:
     return UUID(report.edition_id)
 
 
-async def _index(db: Database, tmp_path: Path, edition_id: UUID) -> None:
+async def _index(db: Database, tmp_path: Path, edition_id: UUID, *, force: bool = False) -> None:
     service = IndexingService(
         ArtifactStore(tmp_path / "artifacts"),
         DoclingExtractor(converter=_extractor_pdf_no_model()),
@@ -98,6 +113,7 @@ async def _index(db: Database, tmp_path: Path, edition_id: UUID) -> None:
             chunking_params=ChunkingParams(),
             embedding_model_name="fake-model",
             embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
+            force=force,
         )
 
 
@@ -267,6 +283,84 @@ async def test_idempotent_even_when_concepts_empty(db: Database, tmp_path: Path)
         concepts = await ConceptsRepository(conn).list_all()
     assert len(summaries) == 5
     assert concepts == []
+
+
+async def test_all_items_rejected_is_still_idempotent(db: Database, tmp_path: Path) -> None:
+    """T11-03: idempotência por (edição, versão) NÃO depende de itens
+    publicados — uma execução onde TODOS os summaries e conceitos são
+    rejeitados (suporte vazio em todos os escopos) também fica registrada como
+    concluída; reexecutar a mesma versão não repete chamadas ao provedor."""
+    edition_id = await _seeded_edition(db, tmp_path)
+    provider = FakeEnrichmentProvider(
+        summary_factory=summary_without_support(),
+        concepts_factory=lambda _req: ExtractedConcepts(concepts=()),
+    )
+    first = await _enrich(db, edition_id, provider, model_name="model-a")
+    second = await _enrich(db, edition_id, provider, model_name="model-a")
+
+    assert first.created
+    assert not second.created
+    assert first.summaries_section == 0
+    assert first.summaries_chapter == 0
+    assert first.summaries_edition == 0
+    assert first.concepts == 0
+    assert first.warnings  # rejeições registradas, nunca silenciosas
+    async with db.connection() as conn:
+        summaries = await SummariesRepository(conn).list_by_edition(edition_id)
+        runs = await EnrichmentRunsRepository(conn).count_for_edition(edition_id)
+    assert summaries == []
+    assert runs == 1  # a execução sem itens fica registrada (T11-03)
+
+
+async def test_two_reindexations_never_use_inactive_passages(db: Database, tmp_path: Path) -> None:
+    """T11-02 + R2-T11-01: o enriquecimento opera SÓ sobre a execução ativa de
+    indexação. A identidade de `EnrichmentRun` inclui `index_run_id`, então
+    reindexar a edição com o MESMO modelo de enriquecimento exige uma SEGUNDA
+    execução sobre o conjunto novo — passagens de execuções inativas (histórico)
+    nunca chegam ao provedor nem viram suporte de síntese/conceito."""
+    edition_id = await _ingest_epub(db, tmp_path)
+    await _index(db, tmp_path, edition_id)
+
+    async with db.connection() as conn:
+        first_run = await IndexRunsRepository(conn).get_active(edition_id)
+        assert first_run is not None
+        first_ids = {p.id for p in await PassagesRepository(conn).list_by_index_run(first_run.id)}
+    first_provider = FakeEnrichmentProvider()
+    first = await _enrich(db, edition_id, first_provider, model_name="model-a")
+
+    # Reindexação com --force minta uma execução NOVA: novas passagens, a
+    # anterior deixa de ser ativa (T6-01).
+    await _index(db, tmp_path, edition_id, force=True)
+    async with db.connection() as conn:
+        active_run = await IndexRunsRepository(conn).get_active(edition_id)
+        assert active_run is not None
+        assert active_run.id != first_run.id
+        active_ids = {p.id for p in await PassagesRepository(conn).list_by_index_run(active_run.id)}
+        assert active_ids  # a nova execução tem passagens próprias
+        assert active_ids.isdisjoint(first_ids)
+
+    # MESMO modelo de enriquecimento: NÃO é no-op — a identidade (execução de
+    # indexação) mudou, e o serviço precisa representar o conjunto corrente.
+    second_provider = FakeEnrichmentProvider()
+    second = await _enrich(db, edition_id, second_provider, model_name="model-a")
+    assert second.created
+    assert second.summarizer_version_id == first.summarizer_version_id
+
+    # Nenhuma passagem inativa chegou ao provedor na segunda execução.
+    for summary_request in second_provider.summary_requests:
+        assert all(ref.passage_id in active_ids for ref in summary_request.passages)
+    for concept_request in second_provider.concept_requests:
+        assert all(ref.passage_id in active_ids for ref in concept_request.passages)
+
+    # Histórico preservado: duas execuções de enriquecimento e duas gerações de
+    # sínteses conviven (AC-15); a segunda geração refere SÓ à execução ativa.
+    async with db.connection() as conn:
+        runs = await EnrichmentRunsRepository(conn).count_for_edition(edition_id)
+        summaries = await SummariesRepository(conn).list_by_edition(edition_id)
+    assert runs == 2
+    assert len(summaries) == 10  # 5 (primeira geração) + 5 (segunda geração)
+    for summary in summaries[5:]:  # `list_by_edition` ordena por created_at
+        assert all(pid in active_ids for pid in summary.supporting_passage_ids)
 
 
 async def test_unknown_edition_raises_not_found(db: Database, tmp_path: Path) -> None:

@@ -2,10 +2,12 @@
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from rag.adapters.planner_adapter import (
     OpenAiCompatiblePlannerProvider,
@@ -20,7 +22,7 @@ from rag.domain.errors import (
 )
 from rag.domain.providers import PlanningRequest
 
-_BASE_URL = "http://planner.test/v1"
+_BASE_URL = "https://planner.test/v1"
 
 
 async def _noop_sleep(_seconds: float) -> None:
@@ -172,3 +174,32 @@ class TestPlan:
                 await provider.plan(_request())
         finally:
             await provider.aclose()
+
+
+class TestEndpointSecurity:
+    """T10-04/AC-16: `PlannerEndpointSettings` herda `HttpEndpointSettings` —
+    a credencial NUNCA pode trafegar por http:// em texto claro."""
+
+    def test_http_with_api_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="https://"):
+            _settings(base_url="http://planner.test/v1", api_key="segredo-123")
+
+    def test_http_with_api_key_file_is_rejected(self, tmp_path: Path) -> None:
+        secret_file = tmp_path / "planner_key"
+        secret_file.write_text("segredo-do-arquivo", encoding="utf-8")
+        with pytest.raises(ValidationError, match="https://"):
+            _settings(base_url="http://planner.test/v1", api_key_file=secret_file)
+
+    def test_https_with_api_key_is_accepted(self) -> None:
+        settings = _settings(api_key="segredo-123")
+        assert settings.api_key.get_secret_value() == "segredo-123"
+
+    def test_https_with_api_key_file_is_accepted(self, tmp_path: Path) -> None:
+        secret_file = tmp_path / "planner_key"
+        secret_file.write_text("segredo-do-arquivo", encoding="utf-8")
+        settings = _settings(api_key_file=secret_file)
+        assert settings.api_key.get_secret_value() == "segredo-do-arquivo"
+
+    def test_http_without_credential_is_accepted(self) -> None:
+        settings = _settings(base_url="http://planner.test/v1")
+        assert settings.api_key.get_secret_value() == ""

@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.domain.answer import (
+    AnswerBlock,
     Claim,
     Contradiction,
     EvidenceRef,
@@ -74,11 +75,168 @@ class TestGeneratedAnswer:
             )
 
     def test_valid_answer(self) -> None:
+        claim = Claim(id="c1", text="Spleen é tédio", evidence_ids=(uuid4(),))
+        blocks = (
+            AnswerBlock(text=claim.text, claim_id="c1"),
+            AnswerBlock(text=" "),
+        )
         answer = GeneratedAnswer(
-            answer_markdown="Spleen é ... [1]",
+            answer_markdown="".join(block.text for block in blocks),
+            blocks=blocks,
             abstained=False,
-            claims=(Claim(id="c1", text="Spleen é tédio", evidence_ids=(uuid4(),)),),
-            limitations=("apenas uma obra consultada",),
+            claims=(claim,),
+        )
+        assert not answer.abstained
+
+    def test_generated_answer_has_no_limitations_field(self) -> None:
+        """T13-FULL-01: o contrato do gerador NUNCA carrega limitações — as
+        limitações são derivadas deterministicamente pelo serviço; nenhuna prosa
+        factual do modelo pode atravessar por esse canal."""
+        assert "limitations" not in GeneratedAnswer.model_fields
+
+    # --- T13-01: a abstenção NUNCA carrega prosa factual arbitrária (AC-10) ---
+
+    def test_abstained_answer_cannot_have_text(self) -> None:
+        with pytest.raises(ValidationError, match="texto"):
+            GeneratedAnswer(
+                answer_markdown="Fato inventado apresentado ao usuário.",
+                abstained=True,
+                abstention_reason="Sem suporte.",
+            )
+
+    def test_abstained_answer_cannot_have_blocks(self) -> None:
+        with pytest.raises(ValidationError, match="blocos"):
+            GeneratedAnswer(
+                answer_markdown="",
+                abstained=True,
+                abstention_reason="Sem suporte.",
+                blocks=(AnswerBlock(text="prosa"),),
+            )
+
+    # --- T13-03: o Markdown entregue fica ligado às afirmações verificadas ---
+
+    def test_answer_requires_blocks_covering_markdown(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="blocos"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada.",
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_markdown_must_equal_concatenation_of_blocks(self) -> None:
+        """T13-03: texto do Markdown fora dos blocos é rejeitado (falha
+        fechada) — uma afirmação factual extra não listada não pode ser
+        entregue sem verificação."""
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="concatenação"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada. Outra afirmação inventada.",
+                blocks=(AnswerBlock(text="Afirmação verificada.", claim_id="c1"),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_block_referencing_unknown_claim_is_rejected(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="inexistente"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada.",
+                blocks=(AnswerBlock(text="Afirmação verificada.", claim_id="c9"),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_claim_block_must_match_claim_text(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="corresponder"):
+            GeneratedAnswer(
+                answer_markdown="Outro texto.",
+                blocks=(AnswerBlock(text="Outro texto.", claim_id="c1"),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_every_claim_must_appear_as_block(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="aparecer"):
+            GeneratedAnswer(
+                answer_markdown=" ",
+                blocks=(AnswerBlock(text=" "),),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    # --- T13-R2-01/T13-R3-01: bloco sem claim_id NÃO pode transportar conteúdo semântico ---
+
+    def test_null_block_with_factual_prose_is_rejected(self) -> None:
+        """T13-R2-01: o reprodutor da rodada 2 — uma frase factual num bloco sem
+        `claim_id` ("Marte tem duas luas.") é rejeitada por construção (AC-09)."""
+        claim = Claim(id="c1", text="A fonte diz X.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="whitespace"):
+            GeneratedAnswer(
+                answer_markdown="A fonte diz X. Marte tem duas luas.",
+                blocks=(
+                    AnswerBlock(text=claim.text, claim_id="c1"),
+                    AnswerBlock(text=" Marte tem duas luas.", claim_id=None),
+                ),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_null_block_with_natural_prose_is_rejected(self) -> None:
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="whitespace"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada. Portanto, conclúse.",
+                blocks=(
+                    AnswerBlock(text=claim.text, claim_id="c1"),
+                    AnswerBlock(text=" Portanto, conclúse.", claim_id=None),
+                ),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    @pytest.mark.parametrize(
+        "unverified",
+        [
+            " 2024",  # ano — reprodutor da rodada 3
+            " 42",  # quantidade
+            " 12.5%",  # porcentagem
+            " 3 de maio",  # data — contém letras
+            " https://exemplo.com",  # URL
+        ],
+    )
+    def test_null_block_with_semantic_content_is_rejected(self, unverified: str) -> None:
+        """T13-R3-01: números, datas, quantidades, URLs ou qualquer conteúdo
+        semântico num bloco sem `claim_id` é rejeitado — tudo deve pertencer a
+        uma afirmação verificada (AC-09)."""
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        with pytest.raises(ValidationError, match="whitespace"):
+            GeneratedAnswer(
+                answer_markdown="Afirmação verificada." + unverified,
+                blocks=(
+                    AnswerBlock(text=claim.text, claim_id="c1"),
+                    AnswerBlock(text=unverified, claim_id=None),
+                ),
+                claims=(claim,),
+                abstained=False,
+            )
+
+    def test_whitespace_null_blocks_allowed(self) -> None:
+        """T13-R3-01: só whitespace (separadores/parágrafos inseridos pelo
+        renderer) é permitido num bloco sem claim_id."""
+        claim = Claim(id="c1", text="Afirmação verificada.", evidence_ids=(uuid4(),))
+        blocks = (
+            AnswerBlock(text="\n\n", claim_id=None),
+            AnswerBlock(text=claim.text, claim_id="c1"),
+            AnswerBlock(text=" \n", claim_id=None),
+        )
+        answer = GeneratedAnswer(
+            answer_markdown="".join(block.text for block in blocks),
+            blocks=blocks,
+            claims=(claim,),
+            abstained=False,
         )
         assert not answer.abstained
 
@@ -121,6 +279,57 @@ class TestEvidenceRef:
                 char_start=3,
             )
 
+    def test_multipage_offsets_valid_when_inverted_between_pages(self) -> None:
+        """T12-R2-01: para páginas distintas, `char_start` (relativo à página
+        inicial) e `char_end` (relativo à página final) podem ser invertidos —
+        ex.: início no offset 100 da página 10, fim no offset 3 da página 11 —
+        e a referência é válida e reproduzível."""
+        ref = EvidenceRef(
+            passage_id=uuid4(),
+            edition_id=uuid4(),
+            work_id=uuid4(),
+            text="trecho multipágina",
+            score=0.9,
+            rank=0,
+            physical_page=10,
+            page_end=11,
+            printed_label="p. 10",
+            printed_end_label="p. 11",
+            char_start=100,
+            char_end=3,
+        )
+        assert ref.char_start == 100
+        assert ref.char_end == 3
+
+    def test_same_page_offsets_require_char_end_gt_char_start(self) -> None:
+        """T12-R2-01: na MESMA página (ou sem informação de página), a
+        comparação `char_end > char_start` continua a valer."""
+        with pytest.raises(ValidationError, match="char_end"):
+            EvidenceRef(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="trecho",
+                score=0.9,
+                rank=0,
+                physical_page=10,
+                page_end=10,
+                char_start=100,
+                char_end=3,
+            )
+        # Sem informação de página (EPUB/backwards compat), também rejeitado.
+        with pytest.raises(ValidationError, match="char_end"):
+            EvidenceRef(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="trecho",
+                score=0.9,
+                rank=0,
+                char_start=100,
+                char_end=3,
+            )
+
     def test_full_reference(self) -> None:
         ref = EvidenceRef(
             passage_id=uuid4(),
@@ -136,6 +345,53 @@ class TestEvidenceRef:
             char_end=30,
         )
         assert ref.physical_page == 42
+        # T12-01: a referência expõe a página de fim (para uma passagem de
+        # página única, o banco devolve page_end == physical_page).
+        assert ref.page_end is None
+        assert ref.page_end_id is None
+
+    def test_multipage_reference_carries_end_page(self) -> None:
+        """T12-01/AC-03: a referência transporta início e fim da localização —
+        IDs e índices físicos de ambas as páginas, rótulos e offsets."""
+        start_id = uuid4()
+        end_id = uuid4()
+        ref = EvidenceRef(
+            passage_id=uuid4(),
+            edition_id=uuid4(),
+            work_id=uuid4(),
+            text="trecho multipágina",
+            score=0.9,
+            rank=0,
+            section_path=("Obra", "Capítulo I"),
+            page_start_id=start_id,
+            page_end_id=end_id,
+            physical_page=1,
+            page_end=2,
+            printed_label="p. 1",
+            printed_end_label="p. 2",
+            char_start=4,
+            char_end=7,
+        )
+        assert ref.page_start_id == start_id
+        assert ref.page_end_id == end_id
+        assert ref.page_end == 2
+        assert ref.printed_end_label == "p. 2"
+        # o offset `char_end` é relativo à página de fim; `char_start` à de início.
+        assert ref.char_start == 4
+        assert ref.char_end == 7
+
+    def test_page_end_must_not_precede_page_start(self) -> None:
+        with pytest.raises(ValidationError, match="page_end"):
+            EvidenceRef(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="trecho",
+                score=0.9,
+                rank=0,
+                physical_page=3,
+                page_end=2,
+            )
 
 
 class TestVerificationResult:

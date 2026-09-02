@@ -72,6 +72,7 @@ class Edition(BaseModel):
     ingestion_status: IngestionStatus = IngestionStatus.PENDING
     derived_artifacts: list[DerivedArtifactRef] = Field(default_factory=list)
     extraction_warnings: tuple[str, ...] = Field(default_factory=tuple)
+    canonical_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     id: UUID = Field(default_factory=uuid4)
     created_at: AwareDatetime = Field(default_factory=utcnow)
 
@@ -147,7 +148,16 @@ class Page(BaseModel):
 
 class Passage(BaseModel):
     """Unidade citável. `context_header` é metadado de recuperação e NUNCA faz
-    parte do texto citável — apenas `text` pode ser citado (AC-08/AC-12)."""
+    parte do texto citável (AC-08/AC-12).
+
+    `original_text`, quando presente, preserva o texto exato dos blocos
+    canônicos de origem (T6-05 — antes da normalização do chunker) e é o
+    campo que alimenta a citação literal (`citable_text`); `text`
+    (normalizado) continua sendo a base de busca lexical/embeddings.
+    `index_run_id` associa a passagem à execução de indexação que a
+    produziu (T6-01) — `None` apenas para linhas fora do fluxo de `rag
+    index` (ex.: fixtures de teste de repository).
+    """
 
     edition_id: UUID
     ordinal: int = Field(ge=0)
@@ -162,21 +172,31 @@ class Passage(BaseModel):
     context_header: str = Field(default="", max_length=1000)
     parent_passage_id: UUID | None = None
     embedding_version_id: UUID | None = None
+    original_text: str | None = Field(default=None, min_length=1, max_length=_MAX_TEXT)
+    index_run_id: UUID | None = None
     id: UUID = Field(default_factory=uuid4)
 
     @model_validator(mode="after")
     def _offsets_coherent(self) -> Self:
         if (self.char_start is None) != (self.char_end is None):
             raise ValueError("char_start e char_end devem ser ambos definidos ou ambos nulos")
-        if (
-            self.char_start is not None
-            and self.char_end is not None
-            and self.char_end <= self.char_start
-        ):
-            raise ValueError("char_end deve ser > char_start")
+        if self.char_start is not None and self.char_end is not None:
+            # T12-R2-01: `char_end > char_start` só vale quando ambos os offsets
+            # referem à MESMA página. Para uma passagem multipágina
+            # (page_start_id != page_end_id), `char_start` é relativo à página
+            # de início e `char_end` à página de fim (NOTES.md §10.6 item 3) —
+            # podem ser invertidos entre páginas e ainda ser corretos.
+            same_page = (
+                self.page_start_id is None
+                or self.page_end_id is None
+                or self.page_start_id == self.page_end_id
+            )
+            if same_page and self.char_end <= self.char_start:
+                raise ValueError("char_end deve ser > char_start")
         return self
 
     @property
     def citable_text(self) -> str:
-        """Único texto que pode aparecer como citação literal."""
-        return self.text
+        """Único texto que pode aparecer como citação literal (T6-05: o
+        original preservado do bloco canônico, quando disponível)."""
+        return self.original_text if self.original_text is not None else self.text

@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from uuid import UUID
 
-from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
+from rag.domain.answer import AnswerBlock, Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.providers import (
     ClaimVerdict,
     ConceptExtractRequest,
@@ -29,6 +29,7 @@ from rag.domain.providers import (
     VerificationRequest,
     VerificationVerdict,
 )
+from rag.domain.versions import EmbeddingVersion, utcnow
 
 
 def _deterministic_vector(text: str, dimensions: int) -> list[float]:
@@ -69,6 +70,15 @@ class FakeEmbeddingProvider:
         self.calls.append(text)
         return _deterministic_vector(text, self.dimensions)
 
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="fake-embedding",
+            model_name="fake-embedding",
+            dimensions=self.dimensions,
+            created_at=utcnow(),
+        )
+
 
 _CONCEPT_WORDS: tuple[tuple[str, frozenset[str]], ...] = (
     ("fate", frozenset({"destino", "spleen", "fado"})),
@@ -105,6 +115,15 @@ class ConceptEmbeddingProvider:
 
     async def embed_query(self, text: str) -> list[float]:
         return concept_embedding(text, self.dimensions)
+
+    @property
+    def embedding_version(self) -> EmbeddingVersion:
+        return EmbeddingVersion(
+            label="concept-embedding",
+            model_name="concept-embedding",
+            dimensions=self.dimensions,
+            created_at=utcnow(),
+        )
 
 
 class FakeRerankerProvider:
@@ -159,10 +178,12 @@ class FakeGeneratorProvider:
 
 def _default_answer(request: GenerationRequest) -> GeneratedAnswer:
     first: EvidenceRef = request.evidences[0]
+    claim = Claim(id="c1", text="Afirmação de exemplo.", evidence_ids=(first.passage_id,))
+    blocks = (AnswerBlock(text=claim.text, claim_id="c1"),)
     return GeneratedAnswer(
-        answer_markdown=f"Resposta com base em {len(request.evidences)} evidência(s).",
-        claims=(Claim(id="c1", text="Afirmação de exemplo.", evidence_ids=(first.passage_id,)),),
-        limitations=(),
+        answer_markdown=claim.text,
+        blocks=blocks,
+        claims=(claim,),
         abstained=False,
         abstention_reason=None,
     )
@@ -289,7 +310,6 @@ def abstention_answer(reason: str = "Sem suporte suficiente no acervo.") -> Gene
     return GeneratedAnswer(
         answer_markdown="",
         claims=(),
-        limitations=(),
         abstained=True,
         abstention_reason=reason,
     )

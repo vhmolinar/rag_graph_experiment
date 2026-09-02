@@ -1,6 +1,6 @@
 # Revisão T05 — Representação canônica e adapters Docling
 
-Data: 2026-08-29  
+Data: 2026-08-29
 Resultado: **correções obrigatórias**
 
 T05 ainda não está aprovada. O schema canônico, a ingestão de EPUB/PDF-texto e

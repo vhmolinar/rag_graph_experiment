@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.enums import Depth, SummaryScope
 from rag.domain.query import MAX_SUBQUESTIONS
+from rag.domain.versions import EmbeddingVersion
 
 MAX_PLANNED_ALIASES = 50
 MAX_PLANNED_CONCEPTS = 50
@@ -70,6 +71,9 @@ class PlannedQuery(BaseModel):
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
+    @property
+    def embedding_version(self) -> EmbeddingVersion: ...
+
     async def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
     async def embed_query(self, text: str) -> list[float]: ...
 
@@ -212,7 +216,12 @@ class VerificationRequest(BaseModel):
 
 
 class ClaimVerdict(BaseModel):
-    """Veredicto de suporte de um par (afirmação, evidência) — SPEC §9.4."""
+    """Veredicto de suporte de um par (afirmação, evidência) — SPEC §9.4.
+
+    T13-FULL-02: a saída do verificador fica reduzida a IDs, flags e códigos —
+    NUNCA texto livre. Descrições de contradição são renderizadas pelo domínio/
+    serviço com texto fixo e não factual.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -220,7 +229,6 @@ class ClaimVerdict(BaseModel):
     evidence_id: UUID
     supported: bool
     contradiction: bool = False
-    detail: str | None = Field(default=None, max_length=2000)
 
 
 class VerificationVerdict(BaseModel):

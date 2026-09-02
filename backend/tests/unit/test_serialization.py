@@ -53,7 +53,7 @@ def test_answer_run_roundtrip_with_response() -> None:
         question_anonymized="q",
         explicit_filters=EditionFilter(),
         response=GeneratedAnswer(
-            answer_markdown="...",
+            answer_markdown="",
             abstained=True,
             abstention_reason="sem suporte no acervo",
         ),

@@ -310,7 +310,16 @@ _INCLUSION_CUES = (
     "incluída",
     "incluida",
     "considerando",
+    "no",
+    "na",
+    "em",
 )
+
+# Preposições locativas de inclusão ("no" = "em o", "na" = "em a", "em"):
+# só são sinais quando ADJACENTES à menção (a palavra imediatamente antes) —
+# fora dessa posição são preposições da frase, não filtros (T10-03).
+_POSITIONAL_INCLUSION_CUES = frozenset({"no", "na", "em"})
+
 _EXCLUSION_CUES = (
     "exceto",
     "excepto",
@@ -490,16 +499,21 @@ def _polarity(tokens: list[str], start: int) -> bool | None:
     Olha a janela de até 3 palavras ANTES da menção, com correspondência por
     PALAVRA (nunca substring — evita falsos positivos tipo "sem" dentro de
     "semana"). Sinais de exclusão prevalecem (mais específicos); sinais de
-    inclusão limitam a seleção ("só", "somente", ...). Ausência de sinais é
-    ambigüidade — a menção não é aplicada silenciosamente (NOTAS.md §10.11
-    item 6).
+    inclusão limitam a seleção ("só", "somente", ...). As preposições
+    locativas `no`/`na`/`em` só contam como inclusão quando imediatamente
+    antes da menção — fora dessa posição são preposições da frase, não
+    filtros (T10-03). Ausência de sinais é ambigüidade — a menção não é
+    aplicada silenciosamente (NOTAS.md §10.11 item 6).
     """
     window = tokens[max(0, start - 3) : start]
     for cue in _EXCLUSION_CUES:
         if _contains_phrase(window, cue.split()):
             return False
     for cue in _INCLUSION_CUES:
-        if _contains_phrase(window, cue.split()):
+        if cue in _POSITIONAL_INCLUSION_CUES:
+            if window and window[-1] == cue:
+                return True
+        elif _contains_phrase(window, cue.split()):
             return True
     return None
 

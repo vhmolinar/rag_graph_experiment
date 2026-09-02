@@ -90,6 +90,13 @@ class TestInspectCommand:
         assert "UUID" in result.output
 
 
+class TestBackfillFingerprintCommand:
+    def test_invalid_uuid_exit_one(self, cli: CliRunner, app: typer.Typer) -> None:
+        result = cli.invoke(app, ["backfill-fingerprint", "não-é-uuid"])
+        assert result.exit_code == 1
+        assert "UUID" in result.output
+
+
 class TestIngestCommandValidation:
     def test_missing_metadata_exit_one(
         self, cli: CliRunner, app: typer.Typer, tmp_path: Path

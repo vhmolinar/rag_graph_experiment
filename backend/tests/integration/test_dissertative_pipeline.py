@@ -29,9 +29,9 @@ from model_doubles import (
 )
 
 from rag.application.context import ContextService
-from rag.application.dissertative import DissertativeService
+from rag.application.dissertative import _ABSTENTION_REASON, DissertativeService
 from rag.application.search import RetrievalService
-from rag.domain.answer import Claim, GeneratedAnswer
+from rag.domain.answer import AnswerBlock, Claim, GeneratedAnswer
 from rag.domain.context import ContextPolicy, PackedContext
 from rag.domain.enums import Depth, Intent, SearchStrategy, SourceType, VerificationAction
 from rag.domain.errors import VerificationError
@@ -39,6 +39,7 @@ from rag.domain.library import Edition, Page, Passage, Section, Work
 from rag.domain.providers import GenerationRequest
 from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan, StrategyExplanation
 from rag.domain.retrieval import RetrievalPolicy
+from rag.domain.runs import AnswerRun
 from rag.domain.verification import VerificationBudget, VerificationPolicy
 from rag.domain.versions import (
     ChunkingVersion,
@@ -52,6 +53,7 @@ from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
+from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
 
@@ -304,6 +306,13 @@ async def _packed(
     db: Database, *, plan: QueryPlan, filters: EditionFilter | None = None
 ) -> "PackedContext":
     async with db.connection() as conn:
+        run = await AnswerRunsRepository(conn).create(
+            AnswerRun(
+                question_original="Consulta dissertativa de teste.",
+                question_anonymized="Consulta dissertativa de teste.",
+                explicit_filters=filters or EditionFilter(),
+            )
+        )
         retrieval = await _retrieval_service().retrieve(
             conn,
             lexical_query=plan.lexical_query,
@@ -311,6 +320,7 @@ async def _packed(
             filters=filters,
             policy=RetrievalPolicy.defaults(),
             depth=Depth.STANDARD,
+            run=run,
         )
         return await ContextService().assemble(
             conn,
@@ -322,13 +332,32 @@ async def _packed(
 
 
 def _answer_with_claims(evidence_id: UUID) -> GeneratedAnswer:
+    c1 = Claim(id="c1", text="Afirmação sustentada.", evidence_ids=(evidence_id,))
+    c2 = Claim(id="c2", text="Afirmação não sustentada.", evidence_ids=(evidence_id,))
+    blocks = (
+        AnswerBlock(text=c1.text, claim_id="c1"),
+        AnswerBlock(text=" "),
+        AnswerBlock(text=c2.text, claim_id="c2"),
+    )
     return GeneratedAnswer(
-        answer_markdown="Resposta de teste.",
-        claims=(
-            Claim(id="c1", text="Afirmação sustentada.", evidence_ids=(evidence_id,)),
-            Claim(id="c2", text="Afirmação não sustentada.", evidence_ids=(evidence_id,)),
-        ),
-        limitations=(),
+        answer_markdown="".join(block.text for block in blocks),
+        blocks=blocks,
+        claims=(c1, c2),
+        abstained=False,
+        abstention_reason=None,
+    )
+
+
+def _single_claim_answer(evidence_id: UUID) -> GeneratedAnswer:
+    claim = Claim(id="c1", text="Afirmação.", evidence_ids=(evidence_id,))
+    blocks = (
+        AnswerBlock(text=claim.text, claim_id="c1"),
+        AnswerBlock(text=" "),
+    )
+    return GeneratedAnswer(
+        answer_markdown="".join(block.text for block in blocks),
+        blocks=blocks,
+        claims=(claim,),
         abstained=False,
         abstention_reason=None,
     )
@@ -349,20 +378,8 @@ async def test_invalid_citation_is_regenerated_with_feedback(db: Database) -> No
         nonlocal calls
         calls += 1
         if request.verification_feedback is None:
-            return GeneratedAnswer(
-                answer_markdown="Resposta com citação inventada.",
-                claims=(Claim(id="c1", text="Afirmação.", evidence_ids=(invalid_id,)),),
-                limitations=(),
-                abstained=False,
-                abstention_reason=None,
-            )
-        return GeneratedAnswer(
-            answer_markdown="Resposta corrigida.",
-            claims=(Claim(id="c1", text="Afirmação.", evidence_ids=(valid_id,)),),
-            limitations=(),
-            abstained=False,
-            abstention_reason=None,
-        )
+            return _single_claim_answer(invalid_id)
+        return _single_claim_answer(valid_id)
 
     service = DissertativeService(
         FakeGeneratorProvider(answer_factory=_factory), FakeVerifierProvider()
@@ -434,7 +451,8 @@ async def test_question_without_support_abstains(db: Database) -> None:
             model_name="test-model",
         )
     assert outcome.answer.abstained
-    assert outcome.answer.abstention_reason == "Sem suporte."
+    assert outcome.answer.abstention_reason == _ABSTENTION_REASON
+    assert outcome.answer.answer_markdown == ""
     assert outcome.verification.action is VerificationAction.ACCEPTED
     assert verifier.requests == []  # nenhuna chamada ao verificador
 
@@ -449,13 +467,7 @@ async def test_verifier_timeout_releases_no_unverified_answer(db: Database) -> N
     packed = await _packed(db, plan=plan)
     evidence_id = packed.evidences[0].evidence.passage_id
     generator = FakeGeneratorProvider(
-        answer_factory=lambda _r: GeneratedAnswer(
-            answer_markdown="Resposta.",
-            claims=(Claim(id="c1", text="Afirmação.", evidence_ids=(evidence_id,)),),
-            limitations=(),
-            abstained=False,
-            abstention_reason=None,
-        )
+        answer_factory=lambda _r: _single_claim_answer(evidence_id),
     )
     verifier = FakeVerifierProvider(fail_with=[ModelTimeoutError()])
     service = DissertativeService(generator, verifier)
@@ -484,13 +496,7 @@ async def test_comparative_with_single_work_declares_limitation(db: Database) ->
 
     evidence_id = packed.evidences[0].evidence.passage_id
     generator = FakeGeneratorProvider(
-        answer_factory=lambda _r: GeneratedAnswer(
-            answer_markdown="Resposta.",
-            claims=(Claim(id="c1", text="Afirmação.", evidence_ids=(evidence_id,)),),
-            limitations=(),
-            abstained=False,
-            abstention_reason=None,
-        )
+        answer_factory=lambda _r: _single_claim_answer(evidence_id),
     )
     service = DissertativeService(generator, FakeVerifierProvider())
     async with db.connection() as conn:
@@ -504,7 +510,7 @@ async def test_comparative_with_single_work_declares_limitation(db: Database) ->
             verification_policy=_verification_policy(max_iterations=0),
             model_name="test-model",
         )
-    assert any("única obra" in limitation for limitation in outcome.answer.limitations)
+    assert any("única obra" in limitation for limitation in outcome.limitations)
 
 
 async def test_versions_are_registered(db: Database) -> None:
@@ -514,13 +520,7 @@ async def test_versions_are_registered(db: Database) -> None:
     packed = await _packed(db, plan=plan)
     evidence_id = packed.evidences[0].evidence.passage_id
     generator = FakeGeneratorProvider(
-        answer_factory=lambda _r: GeneratedAnswer(
-            answer_markdown="Resposta.",
-            claims=(Claim(id="c1", text="Afirmação.", evidence_ids=(evidence_id,)),),
-            limitations=(),
-            abstained=False,
-            abstention_reason=None,
-        )
+        answer_factory=lambda _r: _single_claim_answer(evidence_id),
     )
     service = DissertativeService(generator, FakeVerifierProvider())
     async with db.connection() as conn:
@@ -559,13 +559,7 @@ async def test_same_policy_is_idempotent_version(db: Database) -> None:
     packed = await _packed(db, plan=plan)
     evidence_id = packed.evidences[0].evidence.passage_id
     generator = FakeGeneratorProvider(
-        answer_factory=lambda _r: GeneratedAnswer(
-            answer_markdown="Resposta.",
-            claims=(Claim(id="c1", text="Afirmação.", evidence_ids=(evidence_id,)),),
-            limitations=(),
-            abstained=False,
-            abstention_reason=None,
-        )
+        answer_factory=lambda _r: _single_claim_answer(evidence_id),
     )
     service = DissertativeService(generator, FakeVerifierProvider())
     async with db.connection() as conn:

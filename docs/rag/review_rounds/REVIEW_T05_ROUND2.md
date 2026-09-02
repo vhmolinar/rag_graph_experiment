@@ -1,8 +1,8 @@
 # Segunda revisão T05
 
-Data: 2026-08-29  
+Data: 2026-08-29
 Referências: `docs/rag/REVIEW_T05.md`,
-`docs/rag/REVIEW_RESPONSE_T05.md`  
+`docs/rag/REVIEW_RESPONSE_T05.md`
 Resultado: **correções obrigatórias**
 
 As correções eliminaram o PDF branco e o erro de Unicode. T5-07, T5-08 e

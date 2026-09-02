@@ -175,6 +175,26 @@ class TestPassage:
         with pytest.raises(ValidationError, match="char_end"):
             self._passage(char_start=10, char_end=10)
 
+    def test_multipage_offsets_valid_when_inverted_between_pages(self) -> None:
+        """T12-R2-01: para páginas distintas, `char_start` (relativo à página
+        inicial) e `char_end` (relativo à página final) podem ser invertidos —
+        ex.: início no offset 100 da página A, fim no offset 3 da página B."""
+        page_a = uuid4()
+        page_b = uuid4()
+        passage = Passage(
+            edition_id=uuid4(),
+            ordinal=0,
+            text="trecho multipágina",
+            token_count=3,
+            chunking_version_id=uuid4(),
+            page_start_id=page_a,
+            page_end_id=page_b,
+            char_start=100,
+            char_end=3,
+        )
+        assert passage.char_start == 100
+        assert passage.char_end == 3
+
     def test_token_count_positive(self) -> None:
         with pytest.raises(ValidationError):
             self._passage(token_count=0)

@@ -24,6 +24,20 @@ condições; calibração de desempenho em corpora grandes fica para T19.
 Passagens-pai (sem `embedding_version_id`, ver `application/index.py` e
 NOTES.md §10.6 item 2) nunca são candidatas: só chunks-filho são unidades
 recuperáveis pela busca.
+
+Seleção do conjunto corrente (T8-01, REVIEW_T08): a recuperação de produção
+usa SOMENTE a execução de indexação ativa da edição — jamais o histórico
+reproduzível. A condição é explícita (`EXISTS` sobre `index_runs.is_active`)
+e se aplica antes de frase, FTS, trigram e filtros de obra/edição, no mesmo
+`WHERE`. Política de compatibilidade para linhas legadas
+(`index_run_id IS NULL` — fixtures de teste, acervo anterior a `rag index`):
+elas continuam elegíveis APENAS enquanto a edição não tem execução ativa;
+assim que a edição é indexada, essas linhas deixam de ser candidatas junto
+com as de execuções antigas — nunca reintroduzem um conjunto inativo.
+
+`limit` é o orçamento de candidatos que T09 controla: é validado num inteiro
+positivo com teto fixo (`MAX_SEARCH_LIMIT`) porque `LIMIT -1`/`LIMIT 0` no
+PostgreSQL não restringem ou zeram a consulta como esperado (T8-03).
 """
 
 from psycopg import AsyncConnection
@@ -34,6 +48,10 @@ from rag.domain.query import EditionFilter, LexicalQuery
 from rag.domain.runs import RankedCandidate
 
 _FTS_CONFIG = "portuguese_unaccent"
+# T8-03: teto do orçamento de candidatos. `LIMIT -1` = sem limite e `LIMIT 0`
+# não é um erro no PostgreSQL, então um chamador descuidado recuperaria o
+# acervo inteiro ou nada de forma silenciosa. Valores inválidos para T09.
+MAX_SEARCH_LIMIT = 100
 # Separador de palavras para a comparação trigram: qualquer sequência de
 # caracteres não alfanuméricos (pontuação, espaços). Literal fixo, nunca
 # construído a partir de entrada externa.
@@ -59,12 +77,39 @@ class LexicalSearchRepository:
         filters: EditionFilter | None = None,
         limit: int = 20,
     ) -> list[RankedCandidate]:
+        # R2-T8-03: validação de TIPO em runtime, antes de qualquer comparação
+        # de faixa — anotação de tipo não é validação no Python. `bool` é
+        # subtipo de `int` (`True == 1`), então precisa ser rejeitado
+        # explicitamente; um `float` como `1.5` passa nas comparações de faixa
+        # e chegaria ao SQL (ou falharia tarde no driver) se não barrado aqui.
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError(
+                "limit deve ser um inteiro: valores bool e float são rejeitados; "
+                "uma string numérica também não é aceita."
+            )
+        if limit < 1 or limit > MAX_SEARCH_LIMIT:
+            raise ValueError(
+                f"limit deve ser um inteiro entre 1 e {MAX_SEARCH_LIMIT} (recebido {limit}) — "
+                "valor não-positivo ou acima do teto viola o orçamento de candidatos."
+            )
         filters = filters if filters is not None else EditionFilter()
         params: dict[str, object] = {
             "trigram_threshold": query.trigram_threshold,
             "limit": limit,
         }
-        conditions = ["p.embedding_version_id IS NOT NULL"]
+        conditions = [
+            "p.embedding_version_id IS NOT NULL",
+            # T8-01: seleção explícita do conjunto corrente. (a) a passagem
+            # pertence à execução ATIVA da sua edição; (b) é legada
+            # (`index_run_id IS NULL`) e a edição NÃO tem execução ativa —
+            # compatibilidade que nunca reintroduz um conjunto inativo.
+            "("
+            "EXISTS (SELECT 1 FROM index_runs ir WHERE ir.id = p.index_run_id AND ir.is_active) "
+            "OR (p.index_run_id IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM index_runs ir2 WHERE ir2.edition_id = p.edition_id AND ir2.is_active"
+            "))"
+            ")",
+        ]
         tsquery_parts: list[str] = []
         similarity_parts: list[str] = []
 

@@ -15,7 +15,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from rag.domain.enums import ConceptState, SummaryScope
-from rag.domain.knowledge import Concept, Summary
+from rag.domain.knowledge import Concept, EnrichmentRun, Summary
 from rag.domain.library import Passage
 
 _PASSAGE_COLUMNS = (
@@ -27,6 +27,71 @@ _PASSAGE_COLUMNS = (
 
 def _passage_from_row(row: dict[str, Any]) -> Passage:
     return Passage(**row)
+
+
+class EnrichmentRunsRepository:
+    """Execuções de enriquecimento concluídas (T11, correção T11-03/R2-T11-01).
+
+    A idempotência por (edição, execução de indexação, versão de síntese) é
+    decidida por ESTE registro, nunca pela existência de sínteses/conceitos:
+    uma execução sem itens publicados (todos os suportes rejeitados) também
+    fica registrada, e `index_run_id` (o conjunto de passagens efetivamente
+    enviado ao provedor) integra a identidade — reindexar com o mesmo modelo
+    exige nova execução sobre o conjunto corrente.
+    """
+
+    def __init__(self, conn: AsyncConnection) -> None:
+        self._conn = conn
+
+    async def get_for_edition_run_version(
+        self,
+        edition_id: UUID,
+        index_run_id: UUID,
+        summarizer_version_id: UUID,
+    ) -> EnrichmentRun | None:
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, edition_id, index_run_id, summarizer_version_id, "
+                "extractor_version_id, created_at FROM enrichment_runs "
+                "WHERE edition_id = %s AND index_run_id = %s AND summarizer_version_id = %s",
+                (edition_id, index_run_id, summarizer_version_id),
+            )
+            row = await cur.fetchone()
+        return EnrichmentRun(**row) if row else None
+
+    async def create_if_absent(self, run: EnrichmentRun) -> bool:
+        """Insere a execução; devolve `False` se a identidade já estiver
+        registrada (corrida de concorrência — nada é sobrescrito)."""
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO enrichment_runs (id, edition_id, index_run_id,
+                                             summarizer_version_id,
+                                             extractor_version_id, created_at)
+                VALUES (%(id)s, %(edition_id)s, %(index_run_id)s,
+                        %(summarizer_version_id)s, %(extractor_version_id)s,
+                        %(created_at)s)
+                ON CONFLICT (edition_id, index_run_id, summarizer_version_id)
+                    DO NOTHING
+                """,
+                {
+                    "id": run.id,
+                    "edition_id": run.edition_id,
+                    "index_run_id": run.index_run_id,
+                    "summarizer_version_id": run.summarizer_version_id,
+                    "extractor_version_id": run.extractor_version_id,
+                    "created_at": run.created_at,
+                },
+            )
+            return cur.rowcount == 1
+
+    async def count_for_edition(self, edition_id: UUID) -> int:
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM enrichment_runs WHERE edition_id = %s", (edition_id,)
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row is not None else 0
 
 
 class SummariesRepository:
@@ -71,16 +136,6 @@ class SummariesRepository:
                         "ordinal": ordinal,
                     },
                 )
-
-    async def has_for_edition_version(self, edition_id: UUID, generator_version_id: UUID) -> bool:
-        """Verdadeiro se a edição já tem sínteses da versão — idempotência."""
-        async with self._conn.cursor() as cur:
-            await cur.execute(
-                "SELECT 1 FROM summaries "
-                "WHERE edition_id = %s AND generator_version_id = %s LIMIT 1",
-                (edition_id, generator_version_id),
-            )
-            return await cur.fetchone() is not None
 
     async def list_by_edition(self, edition_id: UUID) -> list[Summary]:
         async with self._conn.cursor(row_factory=dict_row) as cur:
