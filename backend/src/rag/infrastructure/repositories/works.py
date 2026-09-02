@@ -61,6 +61,30 @@ class WorksRepository:
             authors = [Contributor(**r) for r in await cur.fetchall()]
         return Work(**(row | {"authors": authors}))
 
+    async def find_by_identity(self, canonical_title: str, author_names: list[str]) -> Work | None:
+        """Localiza obra por título canônico (case-insensitive) e autores ordenados.
+
+        Usado na ingestão para que duas edições da mesma obra compartilhem o
+        mesmo Work (AC-02) sem exigir que o usuário informe o id.
+        """
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT w.id FROM works w
+                WHERE lower(btrim(w.canonical_title)) = lower(btrim(%(title)s))
+                  AND COALESCE(
+                      (SELECT array_agg(c.name ORDER BY c.ordinal)
+                       FROM contributors c WHERE c.work_id = w.id),
+                      '{}'
+                  ) = %(authors)s::text[]
+                """,
+                {"title": canonical_title, "authors": author_names},
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return await self.get(row["id"])
+
     async def list_all(self, *, limit: int = 100, offset: int = 0) -> list[Work]:
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(

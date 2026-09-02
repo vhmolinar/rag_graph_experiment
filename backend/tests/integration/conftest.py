@@ -39,6 +39,7 @@ ALL_TABLES = (
     "summary_supports",
     "summaries",
     "passages",
+    "index_runs",
     "pages",
     "sections",
     "derived_artifacts",
@@ -51,6 +52,8 @@ ALL_TABLES = (
     "model_endpoint_versions",
     "prompt_versions",
     "retrieval_policy_versions",
+    "context_policy_versions",
+    "verification_policy_versions",
 )
 
 

@@ -56,7 +56,11 @@ def test_extensions_and_fts_config_present(migrated: PgParams) -> None:
 def test_downgrade_and_reupgrade_on_throwaway_database(
     migrated: PgParams,
 ) -> None:
-    """Rollback seguro: downgrade -1 remove tudo; upgrade restaura head."""
+    """Rollback seguro: downgrade até base remove tudo; upgrade restaura head.
+
+    Usa "base" em vez de "-1": com mais de uma revisão, "-1" desfaz apenas a
+    última, não o schema inteiro — o que este teste verifica.
+    """
     probe = "migration_probe"
     with psycopg.connect(_admin_dsn(migrated), autocommit=True) as conn:
         conn.execute(f"DROP DATABASE IF EXISTS {probe}")
@@ -64,7 +68,7 @@ def test_downgrade_and_reupgrade_on_throwaway_database(
     try:
         config = alembic_config(_url(migrated, probe))
         command.upgrade(config, "head")
-        command.downgrade(config, "-1")
+        command.downgrade(config, "base")
         with psycopg.connect(_admin_dsn(migrated, probe)) as conn:
             remaining = conn.execute(
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "

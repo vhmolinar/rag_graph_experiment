@@ -10,7 +10,31 @@ from uuid import UUID, uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from rag.domain.enums import ConceptState, SummaryScope
+from rag.domain.library import Section
 from rag.domain.versions import utcnow
+
+
+def descendant_section_ids(sections: list[Section], root_id: UUID) -> frozenset[UUID]:
+    """IDs de `root_id` e todas as suas seções descendentes (função pura).
+
+    Usada pelo serviço de enriquecimento (T11) para calcular o escopo de
+    suporte de um resumo de capítulo: as passagens das seções descendentes
+    ("resumos/trechos filhos", SPEC §7.4). O invariante de aciclicidade é
+    garantido pelo banco (FK auto-referencial de `sections`).
+    """
+    by_parent: dict[UUID, list[UUID]] = {}
+    for section in sections:
+        if section.parent_section_id is not None:
+            by_parent.setdefault(section.parent_section_id, []).append(section.id)
+    result: set[UUID] = set()
+    stack = [root_id]
+    while stack:
+        current = stack.pop()
+        if current in result:
+            continue
+        result.add(current)
+        stack.extend(by_parent.get(current, ()))
+    return frozenset(result)
 
 
 class Summary(BaseModel):
@@ -73,3 +97,27 @@ class ConceptEvidence(BaseModel):
     passage_id: UUID
     confidence: float = Field(ge=0.0, le=1.0)
     extractor_version_id: UUID
+
+
+class EnrichmentRun(BaseModel):
+    """Execução de enriquecimento concluída (T11, correção T11-03 e R2-T11-01).
+
+    A identidade de uma execução é (edição, execução de indexação, versão de
+    síntese): `index_run_id` referencia o conjunto de passagens efetivamente
+    enviado ao provedor (R2-T11-01), `summarizer_version_id` a versão do
+    modelo/prompt, e `extractor_version_id` a versão de extração da mesma
+    execução. O registro existe MESMO quando nenhum item é publicado (todos os
+    suportes rejeitados) — é ele, não a existência de sínteses, que torna
+    idempotente a reexecução da mesma identidade (NOTES.md §10.12 item 5).
+    Reindexar a edição (nova `IndexRun`) com o mesmo modelo NÃO é no-op: a
+    identidade mudou, exige nova execução sobre o conjunto corrente.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    edition_id: UUID
+    index_run_id: UUID
+    summarizer_version_id: UUID
+    extractor_version_id: UUID
+    id: UUID = Field(default_factory=uuid4)
+    created_at: AwareDatetime = Field(default_factory=utcnow)

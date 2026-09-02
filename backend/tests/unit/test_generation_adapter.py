@@ -1,0 +1,389 @@
+"""Contrato HTTP do adapter de geração compatível com OpenAI (T07)."""
+
+import json
+from pathlib import Path
+from uuid import uuid4
+
+import httpx
+import pytest
+import respx
+from pydantic import ValidationError
+
+from rag.adapters.generation_adapter import (
+    GenerationEndpointSettings,
+    OpenAiCompatibleGeneratorProvider,
+)
+from rag.domain.answer import EvidenceRef
+from rag.domain.enums import Depth
+from rag.domain.errors import (
+    ModelResponseError,
+    ModelTimeoutError,
+    ModelUnavailableError,
+    RateLimitError,
+)
+from rag.domain.providers import GenerationRequest
+
+_BASE_URL = "https://generator.test/v1"
+
+
+async def _noop_sleep(_seconds: float) -> None:
+    return None
+
+
+def _settings(**overrides: object) -> GenerationEndpointSettings:
+    defaults: dict[str, object] = {
+        "base_url": _BASE_URL,
+        "model": "qwen3-instruct",
+    }
+    defaults.update(overrides)
+    return GenerationEndpointSettings(**defaults)  # type: ignore[arg-type]
+
+
+def _request(*, depth: Depth = Depth.STANDARD) -> GenerationRequest:
+    evidence = EvidenceRef(
+        passage_id=uuid4(),
+        edition_id=uuid4(),
+        work_id=uuid4(),
+        text="Trecho de evidência.",
+        score=0.9,
+        rank=0,
+    )
+    return GenerationRequest(
+        system_policy="Responda apenas com base nas evidências.",
+        output_contract="Responda em JSON conforme o contrato GeneratedAnswer.",
+        question="Qual é a pergunta?",
+        scope_description="Obra X, edição Y.",
+        evidences=[evidence],
+        depth=depth,
+    )
+
+
+def _completion_body(payload: dict[str, object]) -> dict[str, object]:
+    return {"choices": [{"message": {"content": json.dumps(payload)}}]}
+
+
+class TestGenerationEndpointSettings:
+    """T7-02/T7-05: URL válida, credencial só sobre https e limites de resiliência."""
+
+    def test_http_with_api_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="https"):
+            _settings(base_url="http://generator.test/v1", api_key="segredo-123")
+
+    def test_http_without_api_key_is_accepted(self) -> None:
+        assert _settings().api_key.get_secret_value() == ""
+
+    def test_https_with_api_key_is_accepted(self) -> None:
+        settings = _settings(api_key="segredo-123")
+        assert settings.api_key.get_secret_value() == "segredo-123"
+
+    def test_http_with_api_key_file_is_rejected(self, tmp_path: Path) -> None:
+        # T7-02: a chave lida do secret file também não pode ir por http:// —
+        # garante que a resolução do api_key ocorre antes da checagem de https.
+        secret_file = tmp_path / "gen_key"
+        secret_file.write_text("segredo-123", encoding="utf-8")
+        with pytest.raises(ValidationError, match="https"):
+            _settings(base_url="http://generator.test/v1", api_key_file=secret_file)
+
+    def test_invalid_base_url_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(base_url="not-a-url")
+
+    def test_non_positive_timeout_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(timeout_seconds=0)
+
+    def test_non_positive_deep_timeout_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(deep_timeout_seconds=0)
+
+    def test_negative_max_retries_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(max_retries=-1)
+
+    def test_non_zero_max_retries_is_rejected(self) -> None:
+        # R2-T7-01: geração NUNCA é retentada — configurando retries via
+        # construtor deve falhar (Literal[0]), não apenas por default.
+        with pytest.raises(ValidationError):
+            _settings(max_retries=1)
+
+    def test_env_non_zero_max_retries_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # R2-T7-01: GENERATOR_MAX_RETRIES=1 não pode reativar retry.
+        monkeypatch.setenv("GENERATOR_MAX_RETRIES", "1")
+        with pytest.raises(ValidationError):
+            GenerationEndpointSettings(base_url=_BASE_URL, model="qwen3-instruct")
+
+    def test_zero_max_concurrency_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(max_concurrency=0)
+
+    def test_default_max_retries_is_zero(self) -> None:
+        # T7-01: geração NÃO é idempotente — o default não pode retentar.
+        assert _settings().max_retries == 0
+
+
+class TestGenerate:
+    @respx.mock
+    async def test_parses_generated_answer(self) -> None:
+        request = _request()
+        answer_payload = {
+            "answer_markdown": "Afirmação. \n",
+            "blocks": [
+                {"text": "Afirmação.", "claim_id": "c1"},
+                {"text": " \n", "claim_id": None},
+            ],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "abstained": False,
+            "abstention_reason": None,
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(answer_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            result = await provider.generate(request)
+        finally:
+            await provider.aclose()
+        assert result.answer_markdown == "Afirmação. \n"
+        assert result.blocks[1].claim_id is None
+        assert result.claims[0].evidence_ids == (request.evidences[0].passage_id,)
+
+    @respx.mock
+    async def test_model_limitations_are_dropped(self) -> None:
+        """T13-FULL-01: o gerador NUNCA pode contribuir limitações — um campo
+        "limitations" extra com prosa factual é ignorado; as limitações são
+        derivadas pelo serviço, não pelo modelo."""
+        request = _request()
+        answer_payload = {
+            "answer_markdown": "Afirmação.",
+            "blocks": [{"text": "Afirmação.", "claim_id": "c1"}],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "limitations": ["Marte tem duas luas."],
+            "abstained": False,
+            "abstention_reason": None,
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(answer_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            result = await provider.generate(request)
+        finally:
+            await provider.aclose()
+        assert not hasattr(result, "limitations")
+
+    @respx.mock
+    async def test_sends_bearer_auth(self) -> None:
+        answer_payload = {
+            "answer_markdown": "",
+            "claims": [],
+            "abstained": True,
+            "abstention_reason": "sem suporte",
+        }
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(answer_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(
+            _settings(api_key="segredo-123"), sleep=_noop_sleep
+        )
+        try:
+            await provider.generate(_request())
+        finally:
+            await provider.aclose()
+        assert route.calls.last.request.headers["Authorization"] == "Bearer segredo-123"
+
+    @respx.mock
+    async def test_deep_depth_uses_longer_timeout(self) -> None:
+        answer_payload = {
+            "answer_markdown": "",
+            "claims": [],
+            "abstained": True,
+            "abstention_reason": "sem suporte",
+        }
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(answer_payload))
+        )
+        settings = _settings(timeout_seconds=10.0, deep_timeout_seconds=99.0)
+        provider = OpenAiCompatibleGeneratorProvider(settings, sleep=_noop_sleep)
+        try:
+            await provider.generate(_request(depth=Depth.DEEP))
+        finally:
+            await provider.aclose()
+        sent_timeout = route.calls.last.request.extensions["timeout"]
+        assert sent_timeout["read"] == 99.0
+
+    @respx.mock
+    async def test_timeout_raises_model_timeout_error(self) -> None:
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
+            side_effect=httpx.TimeoutException("timeout")
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelTimeoutError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+        # T7-01: geração não é idempotente — não retenta (default max_retries=0).
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_connection_error_raises_model_unavailable_error(self) -> None:
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(
+            side_effect=httpx.ConnectError("recusado")
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelUnavailableError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_429_raises_rate_limit_error(self) -> None:
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(429, headers={"Retry-After": "7"}, json={})
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(RateLimitError) as exc_info:
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+        assert exc_info.value.retry_after_seconds == 7
+
+    @respx.mock
+    async def test_5xx_raises_model_unavailable_error(self) -> None:
+        route = respx.post(f"{_BASE_URL}/chat/completions").mock(return_value=httpx.Response(503))
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelUnavailableError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+        # T7-01: 5xx (falha transitória) ainda assim não retenta — não idempotente.
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_malformed_envelope_raises_model_response_error(self) -> None:
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json={"unexpected": "shape"})
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_content_not_json_raises_model_response_error(self) -> None:
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "não é json"}}]}
+            )
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_content_violates_generated_answer_contract_raises_model_response_error(
+        self,
+    ) -> None:
+        # abstained=True mas com claims: viola o invariante de GeneratedAnswer.
+        bad_payload = {
+            "answer_markdown": "x",
+            "claims": [{"id": "c1", "text": "y", "evidence_ids": [], "inference": True}],
+            "abstained": True,
+            "abstention_reason": "motivo",
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(bad_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_null_block_with_factual_prose_raises_model_response_error(self) -> None:
+        """T13-R2-01: texto factual num bloco sem `claim_id` viola o contrato —
+        falha fechada no adapter de geração."""
+        request = _request()
+        bad_payload = {
+            "answer_markdown": "Afirmação. Marte tem duas luas.",
+            "blocks": [
+                {"text": "Afirmação.", "claim_id": "c1"},
+                {"text": " Marte tem duas luas.", "claim_id": None},
+            ],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "abstained": False,
+            "abstention_reason": None,
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(bad_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_null_block_with_numeric_content_raises_model_response_error(self) -> None:
+        """T13-R3-01: o reprodutor da rodada 3 — um número num bloco sem
+        `claim_id` (" 2024") viola o contrato; falha fechado no adapter."""
+        request = _request()
+        bad_payload = {
+            "answer_markdown": "Afirmação. 2024",
+            "blocks": [
+                {"text": "Afirmação.", "claim_id": "c1"},
+                {"text": " 2024", "claim_id": None},
+            ],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Afirmação.",
+                    "evidence_ids": [str(request.evidences[0].passage_id)],
+                    "inference": False,
+                }
+            ],
+            "abstained": False,
+            "abstention_reason": None,
+        }
+        respx.post(f"{_BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion_body(bad_payload))
+        )
+        provider = OpenAiCompatibleGeneratorProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.generate(_request())
+        finally:
+            await provider.aclose()

@@ -6,7 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from rag.domain.enums import AnswerMode, Intent, SearchStrategy
-from rag.domain.query import EditionFilter, QueryPlan, QueryRequest
+from rag.domain.query import (
+    EditionFilter,
+    LexicalQuery,
+    QueryPlan,
+    QueryRequest,
+    StrategyExplanation,
+)
 
 
 class TestQueryRequest:
@@ -61,6 +67,53 @@ class TestEditionFilter:
         assert not EditionFilter(exclude_edition_ids=frozenset({uuid4()})).is_empty()
 
 
+class TestLexicalQuery:
+    def test_requires_phrase_or_required_terms(self) -> None:
+        with pytest.raises(ValidationError, match="frase exata ou ao menos um termo"):
+            LexicalQuery()
+
+    def test_phrase_alone_is_valid(self) -> None:
+        query = LexicalQuery(phrase="dom casmurro")
+        assert query.required_terms == ()
+
+    def test_required_terms_alone_is_valid(self) -> None:
+        query = LexicalQuery(required_terms=("capitu", "bentinho"))
+        assert query.phrase is None
+
+    def test_blank_term_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="não pode ser vazio"):
+            LexicalQuery(required_terms=("  ",))
+
+    def test_multi_word_term_rejected(self) -> None:
+        """Sequências de várias palavras pertencem ao campo `phrase`, não a
+        `required_terms`/`excluded_terms` (cada termo é uma única palavra)."""
+        with pytest.raises(ValidationError, match="única palavra alfanumérica"):
+            LexicalQuery(required_terms=("dom casmurro",))
+
+    def test_punctuation_in_term_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="única palavra alfanumérica"):
+            LexicalQuery(required_terms=("ciume!",))
+
+    def test_same_term_required_and_excluded_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="obrigatório e excluído"):
+            LexicalQuery(required_terms=("ciume",), excluded_terms=("ciume",))
+
+    def test_trigram_threshold_bounds(self) -> None:
+        with pytest.raises(ValidationError):
+            LexicalQuery(required_terms=("ciume",), trigram_threshold=1.5)
+        with pytest.raises(ValidationError):
+            LexicalQuery(required_terms=("ciume",), trigram_threshold=-0.1)
+
+    def test_default_threshold(self) -> None:
+        query = LexicalQuery(required_terms=("ciume",))
+        assert query.trigram_threshold == 0.3
+
+    def test_frozen(self) -> None:
+        query = LexicalQuery(required_terms=("ciume",))
+        with pytest.raises(ValidationError):
+            query.required_terms = ("outro",)
+
+
 class TestQueryPlan:
     def _plan(
         self,
@@ -68,12 +121,20 @@ class TestQueryPlan:
         subquestions: list[str] | None = None,
         needs_diversity: bool = False,
     ) -> QueryPlan:
+        requested = (
+            strategy if strategy is not SearchStrategy.AUTOMATIC else SearchStrategy.AUTOMATIC
+        )
         return QueryPlan(
             intent=Intent.FACTUAL,
-            lexical_query="spleen",
+            lexical_query=LexicalQuery(required_terms=("spleen",)),
             semantic_query="tédio existencial",
             strategy=strategy,
-            justification="consulta factual curta",
+            strategy_explanation=StrategyExplanation(
+                requested=requested,
+                chosen=strategy,
+                intent_signals=("intenção=factual",),
+                rationale="consulta factual curta",
+            ),
             subquestions=tuple(subquestions or ()),
             needs_diversity=needs_diversity,
         )
@@ -83,6 +144,26 @@ class TestQueryPlan:
         with pytest.raises(ValidationError, match="automatic"):
             self._plan(strategy=SearchStrategy.AUTOMATIC)
 
+    def test_lexical_query_is_structured(self) -> None:
+        """T10: `lexical_query` é uma `LexicalQuery` directamente executável."""
+        plan = self._plan()
+        assert isinstance(plan.lexical_query, LexicalQuery)
+        assert plan.lexical_query.required_terms == ("spleen",)
+
+    def test_strategy_explanation_must_match_plan_strategy(self) -> None:
+        with pytest.raises(ValidationError, match="coincidir"):
+            QueryPlan(
+                intent=Intent.FACTUAL,
+                lexical_query=LexicalQuery(required_terms=("spleen",)),
+                semantic_query="spleen",
+                strategy=SearchStrategy.HYBRID,
+                strategy_explanation=StrategyExplanation(
+                    requested=SearchStrategy.AUTOMATIC,
+                    chosen=SearchStrategy.LITERAL,
+                    rationale="discrepante",
+                ),
+            )
+
     def test_subquestions_limited(self) -> None:
         with pytest.raises(ValidationError):
             self._plan(subquestions=["q"] * 6)
@@ -91,3 +172,4 @@ class TestQueryPlan:
         plan = self._plan(needs_diversity=True)
         assert plan.needs_diversity
         assert plan.inferred_filters.is_empty()
+        assert plan.strategy_explanation.chosen is SearchStrategy.HYBRID
