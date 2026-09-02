@@ -108,22 +108,40 @@ class PassagesRepository:
         return Passage(**row) if row else None
 
     async def get_citable(self, passage_id: UUID) -> CitablePassage | None:
-        """Resolve uma passagem recuperável em evidência citável para T12."""
+        """Resolve uma passagem recuperável em evidência citável para T12.
+
+        Une os joins de uma vez: seção (path), páginas de INÍCIO e FIM com
+        índices físicos e rótulos impressos (T12-01 — uma passagem pode
+        abranger várias páginas), obra (`work_id`), a passagem-pai
+        (`parent_text`) para expansão de contexto e os conceitos associados
+        (`concepts`, via `concept_evidence` — SPEC §8.6, T12-02).
+        """
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "SELECT p.id AS passage_id, "
                 "p.edition_id, e.work_id AS work_id, COALESCE(p.original_text, p.text) AS text, "
                 "COALESCE(s.path, ARRAY[]::text[]) AS section_path, "
+                "p.page_start_id, p.page_end_id, "
                 "pstart.physical_index AS physical_page, "
+                "pend.physical_index AS page_end, "
                 "pstart.printed_label AS printed_label, "
+                "pend.printed_label AS printed_end_label, "
                 "p.char_start, p.char_end, p.parent_passage_id, "
-                "COALESCE(parent.original_text, parent.text) AS parent_text "
+                "COALESCE(parent.original_text, parent.text) AS parent_text, "
+                "COALESCE(("
+                "SELECT array_agg(c.normalized_label ORDER BY c.normalized_label) "
+                "FROM concept_evidence ce "
+                "JOIN concepts c ON c.id = ce.concept_id "
+                "WHERE ce.passage_id = p.id"
+                "), ARRAY[]::text[]) AS concepts "
                 "FROM passages p "
                 "JOIN editions e ON e.id = p.edition_id "
                 "LEFT JOIN sections s ON s.id = p.section_id "
                 "  AND s.edition_id = p.edition_id "
                 "LEFT JOIN pages pstart ON pstart.id = p.page_start_id "
                 "  AND pstart.edition_id = p.edition_id "
+                "LEFT JOIN pages pend ON pend.id = p.page_end_id "
+                "  AND pend.edition_id = p.edition_id "
                 "LEFT JOIN passages parent ON parent.id = p.parent_passage_id "
                 "  AND parent.edition_id = p.edition_id "
                 "WHERE p.id = %s",

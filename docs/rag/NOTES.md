@@ -910,3 +910,60 @@ Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T11.md`
    contexto adicional, nunca evidência citável.
 3. **Modo `quote` sem geração.** `ContextService.quote` projeta somente
    `EvidenceRef` do contexto montado e não recebe provider de geração.
+
+## 14. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T12)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T12.md`
+(T12-01 a T12-03). Elas complementam o registro §13.
+
+1. **Citações multipágina transportan início e fim da localização (T12-01,
+   AC-03).** `CitablePassage`/`EvidenceRef` passaram a expor `page_start_id`/
+   `page_end_id`, `physical_page`/`page_end` (índices físicos) e
+   `printed_label`/`printed_end_label` (rótulos impressos) de AMBAS as
+   páginas, com `char_start` relativo à página de início e `char_end`
+   relativo à página de fim — mesmo contrato do chunker (NOTES.md §10.6 item
+   3). `PassagesRepository.get_citable` inclui o JOIN da página de fim
+   (`pend`) e a projeção dos novos campos. Integração nova
+   (`test_quote_multipage_passage_reproduces_text`) prova que a abertura da
+   origem reproduz o trecho exato e que os offsets destacam dentro de cada
+   página.
+2. **Diversificação por conceito (T12-02, SPEC §8.6).** A associação
+   rastreável passagem→conceito já existe no banco (`concept_evidence` +
+   `concepts`, T11); `get_citable` a carrega (`CitablePassage.concepts`) e
+   `select_evidences` a aplica quando `needs_diversity`: candidatos que
+   traem um conceito ainda não seleccionado são preferidos sobre os que
+   repetem conceitos já cobertos, numa segunda passada na ordem do ranking.
+   NUNCA se impõe quota cega por conceito (um conceito com poucos candidatos
+   não se preenche). Testes: unitários em `test_context.py` (a diversificação
+   altera a seleção) e integração
+   `test_concept_diversity_changes_selection_in_pipeline` (conceito
+   "liberdade" em a0/a1, "destino" em b0 → a ordem passa de [a1,a0,b0] para
+   [a1,b0,a0]).
+3. **Teste de "generator não chamado" reformulado como verificação
+   estrutural (T12-03).** `test_quote_never_calls_generator` instanciava
+   `FakeGeneratorProvider` sem o injetar — a asserção não observava o sistema
+   sob teste. `test_quote_has_no_generation_path` agora verifica
+   estruturalmente que nem `ContextService.quote` nem `assemble` aceitam
+   provedor de geração, e que a resposta contém só trechos literais do
+   acervo. Quando a orquestração de consultas existir (T13), injetar um
+   generator que falhe ao ser chamado e exercitar o fluxo `quote` completo.
+4. **Bug preexistente do seed de integração corrigido.** O seed de
+   `test_context_pipeline.py` criava uma `EmbeddingVersion` distinta da do
+   provedor de recuperação (`ConceptEmbeddingProvider.embedding_version`); o
+   estágio vetorial filtra por `embedding_version_id`, resultando em zero
+   candidatos vetoriais e as asserções de ordem falhando. O seed passou a
+   usar `provider.embedding_version` (mesmo padrão de
+   `test_retrieval_pipeline.py`).
+5. **Validator de offsets corregido para passagens multipágina (T12-R2-01,
+   AC-03).** A comparação `char_end > char_start` só é válida quando ambos os
+   offsets referem à MESMA página; para uma passagem multipágina, `char_start`
+   é relativo à página de início e `char_end` à página de fim (NOTES.md
+   §10.6 item 3) e podem ser invertidos entre páginas (ex.: início no offset
+   100 da página A, fim no offset 3 da página B). `EvidenceRef`,
+   `CitablePassage` e `Passage` (domínio) passaram a aplicar a comparação
+   somente quando não há páginas distintas; a constraint CHECK
+   `passages_check1` do banco recebe a mesma condição via migration nova
+   `0007` (`char_end > char_start` só quando `page_start_id = page_end_id`
+   ou sem páginas). Testes positivos e negativos adicionados nos três
+   modelos e a integração multipágina passou a usar offsets invertidos
+   (`char_start=30` na página 0, `char_end=13` na página 1).

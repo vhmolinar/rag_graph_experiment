@@ -12,15 +12,15 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 |----|--------------------|--------|--------------------------------|
 | AC-01 | Reingestão idempotente, sem duplicar edição | ✅ | T03: `test_duplicate_source_hash_rejected`, `test_get_by_source_hash`; T04: dedup revalidado por hash (`TestConsistencyModel`); R08: replay divergente falha; T05: `test_reingest_is_idempotent`, `test_reingest_idempotent_exit_zero`, `test_divergent_metadata_same_file_conflicts` (mesma fonte + metadados divergentes falha fechado) |
 | AC-02 | Duas edições da mesma obra distinguíveis e citáveis | ✅ | T02: `test_library.py::TestEdition`; T03: `test_two_editions_same_work_distinct`; R01: `TestCrossEditionIntegrity` (FKs compostas); T05: `test_two_editions_share_one_work` (mesmo Work, edições distintas, via ingestão real) |
-| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` e `test_opening_origin_reproduces_text` (metadados citáveis e recomposição). Falta o caminho passagem→leitor (T17). |
+| AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata`, `test_opening_origin_reproduces_text` (metadados citáveis e recomposição) e `test_quote_multipage_passage_reproduces_text` (T12-01 — passagem multipágina com início/fim de páginas, rótulos e offsets por página, inclusive offsets invertidos entre páginas T12-R2-01; reconstrução e destaque). Falta o caminho passagem→leitor (T17). |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity` |
 | AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
 | AC-07 | Exclusão de obra vale em todos os estágios | ◐ | T02: `test_query.py` (filtros disjuntos); T08: `test_excluded_terms_are_enforced_in_sql`, `test_filter_by_edition`, `test_filter_by_work` (estágio lexical); T09: `test_filter_by_edition`/`test_filter_by_work` (estágio vetorial), `test_retrieval_pipeline.py::test_excluded_work_never_reaches_reranker` (obra excluída não chega à fusão nem ao reranker); T10: `test_planning.py::TestResolveNaturalFilters` (inclusão/exclusão inferida com polaridade explícita; ambigüidade não aplicada silenciosamente), `TestMergeFilters` (prioridade de filtros explícitos), `test_planning_pipeline.py::test_natural_filters_resolved_against_real_catalog`/`test_accent_insensitive_title_matching`/`test_merge_filters_explicit_exclusion_wins`. Falta o estágio de geração/verificação (T13) |
-| AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem prosa); T12: `test_context.py::TestQuoteContract`, `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` e `test_quote_never_calls_generator`. |
+| AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem prosa); T12: `test_context.py::TestQuoteContract`, `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` e `test_quote_has_no_generation_path` (verificação estrutural T12-03: nem `quote` nem `assemble` aceitam provedor de geração). |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ◐ | T02: `test_answer.py::TestClaim` |
 | AC-10 | Pergunta sem suporte produz abstenção | ◐ | T02: `test_answer.py::TestGeneratedAnswer` (contrato de abstenção) |
-| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation`; T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` e testes unitários de limite flexível. A declaração de limitação pertence a T13. |
+| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ◐ | T10: `test_planning.py::TestAdaptiveDiversity` (comparativa → diversidade verdadeira, nunca quota cega), `test_planner_service.py::test_comparative_seeks_coverage` (comparativa → expanded + diversidade + hierárquico), `test_planning_pipeline.py::test_automatic_comparative_resolves_expanded_with_explanation`; T12: `test_context_pipeline.py::test_diversity_preserved_for_comparative` (limite flexível por edição), `test_concept_diversity_changes_selection_in_pipeline` e `test_context.py::TestSelectEvidences` (T12-02 — diversificação por conceito, sem quota cega). A declaração de limitação pertence a T13. |
 | AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts`, `test_summary_without_support_is_rejected`, `test_summaries_never_serve_as_citations`, `test_concept_leads_to_original_passages`, `test_two_reindexations_never_use_inactive_passages`, `test_enrichment.py::TestValidatedSupports`, `test_cli.py::TestEnrichCommand`; T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable`. |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ◐ | T02: `errors.py` (hierarquia tipada); T07: `test_generation_adapter.py`/`test_reranker_adapter.py`/`test_embedding_adapter.py` (timeout, 429, 5xx, payload/dimensão inválidos sempre viram `ModelError` tipado); `test_embedding_adapter_resilience.py` (circuit breaker aberto falha fechado, sem tentar a rede); T11: `test_enrichment_adapter.py` (timeout, 429, 5xx, payload malformado e violação de contrato do provedor de enriquecimento sempre viram erro tipado). Falta: fluxo de geração completo não gerar prosa sem evidências (T13) |
@@ -1084,6 +1084,107 @@ as passagens do escopo ao provedor não são ainda calibrados para contexto de
 modelo (NOTES.md §4, benchmark T19); uma falha intermitente observada UMA vez
 em `test_ingest.py::test_reingest_is_idempotent` durante a rodada não se
 reproduziu nas execuções seguintes (preexistente, sem relação a T11).
+
+### T12 — Montagem de contexto e modo quote ✅
+
+Nenhuna dependência nova. Interpretações registradas em NOTES.md §13 antes de
+implementar (política de contexto versionada; seleção pura de evidências; modo
+`quote` sem geração). Correções da revisão (`docs/rag/review_rounds/REVIEW_T12.md`,
+T12-01 a T12-03) registradas em NOTES.md §14; segunda rodada
+(`docs/rag/review_rounds/REVIEW_T12_ROUND2.md`, T12-R2-01 — offsets invertidos
+multipágina, migration `0007`) em NOTES.md §14 item 5; terceira rodada
+(`docs/rag/review_rounds/REVIEW_T12_ROUND3.md`) **aprovado com ressalva**, ressalva
+atendida pela execução da integração num ambiente com Podman (10 testes T12 +
+211 de integração contra PostgreSQL real).
+
+Entregáveis:
+
+- **Orçamento de contexto** (`domain/context.py`): `ContextBudget`/
+  `ContextPolicy` por profundidade (`max_evidences`, `max_context_chars`,
+  `parent_expansion_chars`, `per_edition_limit`), registrados como
+  `ContextPolicyVersion` (AC-15); `PackedContext` garante estruturalmente que
+  o orçamento declarado nunca é excedido (SPEC §9.1).
+- **Seleção de evidências** (`domain/context.py::select_evidences`): pura,
+  deduplica por passagem, preserva o ranking, respeita o orçamento e aplica
+  diversidade adaptativa (SPEC §8.6) SÓ quando o plano pede diversidade —
+  limite flexível por edição E diversificação por conceito (T12-02: os
+  candidatos que traem um conceito novo são preferidos sobre os que repetem
+  conceitos já cobertos; sem quota cega — a seleção nunca se preenche com
+  menos relevante).
+- **Metadados citáveis multipágina** (T12-01, AC-03): `CitablePassage`/
+  `EvidenceRef` transportam início E fim da localização — IDs e índices
+  físicos de ambas as páginas (`physical_page`/`page_end`), rótulos
+  impressos (`printed_label`/`printed_end_label`) e offsets relativos a cada
+  uma (`char_start` sobre a página de início, `char_end` sobre a página de
+  fim). `PassagesRepository.get_citable` resolve os dois joins de páginas e
+  a associação `concepts` via `concept_evidence`. Os validators de offsets
+  (`Passage`, `CitablePassage`, `EvidenceRef`) e a constraint CHECK do banco
+  (`passages_check1`, migration `0007` — T12-R2-01) aplicam
+  `char_end > char_start` somente quando os offsets referem à mesma página;
+  para páginas distintas os offsets podem ser invertidos e continuam
+  corretos e reproduzíveis.
+- **Modo `quote`** (`application/context.py::ContextService.quote`):
+  projeta os `EvidenceRef` seleccionados SEM provedor de geração (AC-08 —
+  verificação estrutural, T12-03: nem `quote` nem `assemble` aceitam
+  provedor; `QuoteResponse` só tem `evidences`).
+
+Testes/evidências:
+
+- **Unit** (`tests/unit/test_context.py`, `tests/unit/test_answer.py`,
+  `tests/unit/test_library.py`): política cobre as três profundidades;
+  orçamento de contexto nunca é excedido; deduplicação; limite flexível por
+  edição; diversificação por conceito altera a seleção e NUNCA impõe quota
+  cega por conceito; projeção multipágina
+  (`test_multipage_metadata_projected_on_evidence`); `EvidenceRef` com página
+  de fim e validação `page_end >= physical_page`
+  (`test_multipage_reference_carries_end_page`,
+  `test_page_end_must_not_precede_page_start`); **offsets invertidos entre
+  páginas são válidos e na mesma página rejeitados** (T12-R2-01 —
+  `test_multipage_offsets_valid_when_inverted_between_pages`,
+  `test_same_page_offsets_require_char_end_gt_char_start` nos três modelos).
+- **Integração** (`tests/integration/test_context_pipeline.py`, 10, contra
+  PostgreSQL real): snapshot de `quote` com trechos literais e metadados;
+  **passagem multipágina** (T12-01/T12-R2-01) — `quote` devolve início/fim
+  de páginas, rótulos e offsets por página (a passagem usa offsets invertidos
+  entre páginas: `char_start=30`, `char_end=13`), e a abertura da origem
+  reproduz o trecho exato com destaque por página
+  (`test_quote_multipage_passage_reproduces_text`); **verificação estrutural
+  de ausência de geração** (T12-03, `test_quote_has_no_generation_path`);
+  orçamento nunca excedido; diversidade comparativa com limite flexível por
+  edição (`test_diversity_preserved_for_comparative`); **diversificação por
+  conceito altera a seleção no pipeline completo** (T12-02,
+  `test_concept_diversity_changes_selection_in_pipeline`); expansão parental
+  nunca citável; política registrada como `ContextPolicyVersion` idempotente.
+  Corregida nessa rodada: o seed usava uma `EmbeddingVersion` distinta da do
+  provedor de recuperação, deixando o estágio vetorial sem candidatos (o
+  seed passou a usar `provider.embedding_version`).
+
+Comandos executados em 2026-09-01 (Linux; Python 3.12; PostgreSQL real via
+testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
+`TESTCONTAINERS_RYUK_DISABLED=true`):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK — All checks passed |
+| `uv run ruff format --check src tests` | OK — 109 arquivos |
+| `uv run mypy src tests` | OK — 109 arquivos, strict |
+| `uv run pytest tests/unit -q` | OK — 500 passed, 3 skipped (e2e opcionais) |
+| `uv run pytest tests/integration -q` | OK — 211 passed, 1 skipped (PostgreSQL real via testcontainers) |
+
+Critérios: AC-03 (passagem citada abre edição, página e trecho corretos —
+coberto até a passagem; o caminho passagem→leitor é T17); AC-08 (modo `quote`
+sem texto sintetizado, verificação estrutural de ausência de geração); AC-11
+(comparativa não usa uma obra só — diversidade por edição e por conceito, sem
+quota cega; a declaração de limitação pertence a T13); AC-12 (expansão
+parental nunca é citação); AC-15 (política de contexto versionada;
+`AnswerRun` completo fica para T13/T18).
+
+Limitações conhecidas: a asserção de "nenhum provedor de geração" é
+estructural (T12-03) — uma orquestração futura que compone `quote` com
+geração (T13) exigirá um teste de spy real sobre o fluxo completo; o
+`concept_evidence` usado pela diversificação por conceito é o conjunto
+extraído em T11 (a associação é rastreável no banco, não é exposta no
+contrato `QuoteResponse`).
 
 ## Rodada de revisão T01–T04 (2026-08-29)
 

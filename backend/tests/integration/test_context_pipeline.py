@@ -3,16 +3,19 @@
 Seeds works/editions/sections/pages/passages (pais e filhos) e exercita:
 
 - snapshots do modo quote com trechos literais e metadados (AC-03, AC-08);
-- nenhuma chamada ao provedor de geração no modo quote (AC-08);
-- abertura da origem reproduz o texto (offsets/páginas recompõem o trecho)
-  (AC-03);
+- nenhuna chamada ao provedor de geração no modo quote (AC-08) — verificação
+  estrutural (T12-03);
+- abertura da origem reproduz o texto (offsets/páginas recompõem o trecho),
+  inclusive para passagens multipágina (T12-01, AC-03);
 - o orçamento de contexto nunca é excedido (SPEC §9.1);
 - diversidade adaptativa: comparativa seleciona de ambas edições, sem
-  preencher com obra menos relevante (SPEC §8.6, AC-11);
+  preencher com obra menos relevante (SPEC §8.6, AC-11), e diversifica por
+  conceito quando os conceitos estão associados (T12-02);
 - expansão parental no contexto montado, nunca citável (SPEC §7.3, AC-12);
 - a política de contexto fica registrada como `ContextPolicyVersion` (AC-15).
 """
 
+import inspect
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,26 +24,28 @@ from uuid import UUID
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
-from model_doubles import ConceptEmbeddingProvider, FakeGeneratorProvider, FakeRerankerProvider
+from model_doubles import ConceptEmbeddingProvider, FakeRerankerProvider
 
 from rag.application.context import ContextService
 from rag.application.search import RetrievalService
 from rag.domain.answer import QuoteResponse
 from rag.domain.context import ContextBudget, ContextPolicy, PackedContext, context_total_chars
-from rag.domain.enums import Depth, Intent, SearchStrategy, SourceType
+from rag.domain.enums import Depth, Intent, RankingStage, SearchStrategy, SourceType
+from rag.domain.knowledge import Concept
 from rag.domain.library import Edition, Page, Passage, Section, Work
 from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan, StrategyExplanation
 from rag.domain.retrieval import RetrievalPolicy, RetrievalResult
-from rag.domain.runs import AnswerRun
+from rag.domain.runs import AnswerRun, RankedCandidate
 from rag.domain.versions import (
     ChunkingVersion,
     ContextPolicyVersion,
-    EmbeddingVersion,
+    ModelEndpointVersion,
     utcnow,
 )
 from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
+from rag.infrastructure.repositories.enrichment import ConceptsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
 from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
@@ -59,6 +64,16 @@ _PARENT_A0_TEXT = "Capítulo I: " + _A0_TEXT
 _PARENT_A1_TEXT = "Seção 1: " + _A1_TEXT
 _PARENT_B0_TEXT = "Capítulo Único: " + _B0_TEXT
 
+# Passagem multipágina (T12-01): começa numa página e termina na outra. Os
+# offsets são relativos a páginas DISTINTAS e podem ser invertidos entre elas
+# (T12-R2-01): char_start=30 na página 0, char_end=13 na página 1 — corretos
+# e reproduzíveis, ainda que char_end < char_start.
+_MULTI_START_TEXT = "O destino guia a liberdade do spleen de Bentinho."
+_MULTI_END_TEXT = "A memória dos antigos pertence ao spleen."
+_MULTI_CHAR_START = len("O destino guia a liberdade do ")
+_MULTI_CHAR_END = len("A memória dos ")
+_MULTI_TEXT = _MULTI_START_TEXT[_MULTI_CHAR_START:] + "\n" + _MULTI_END_TEXT[:_MULTI_CHAR_END]
+
 
 @dataclass
 class Corpus:
@@ -75,6 +90,15 @@ class Corpus:
     parent_a0: UUID
     parent_a1: UUID
     parent_b0: UUID
+
+
+@dataclass
+class MultipageCorpus:
+    work: UUID
+    edition: UUID
+    page_0: UUID
+    page_1: UUID
+    span: UUID
 
 
 async def _seed(db: Database) -> Corpus:
@@ -139,11 +163,13 @@ async def _seed(db: Database) -> Corpus:
         chunking = await versions.get_or_create(
             ChunkingVersion(label="chunk-ctx", created_at=utcnow())
         )
-        embedding_version = await versions.get_or_create(
-            EmbeddingVersion(label="emb-ctx", model_name="m", dimensions=1024, created_at=utcnow())
-        )
-        repo = PassagesRepository(conn)
         provider = ConceptEmbeddingProvider()
+        # A versão do embedding tem que ser a MESMA que `_retrieval_service`
+        # usa (`ConceptEmbeddingProvider.embedding_version`) — o estágio
+        # vetorial filtra por `embedding_version_id` (T9-01); uma versão
+        # distinta deixaria o estágio vetorial sem candidatos.
+        embedding_version = await versions.get_or_create(provider.embedding_version)
+        repo = PassagesRepository(conn)
 
         parent_a0 = UUID("b0000000-0000-0000-0000-000000000001")
         parent_a1 = UUID("b0000000-0000-0000-0000-000000000002")
@@ -263,6 +289,92 @@ async def _seed(db: Database) -> Corpus:
     )
 
 
+async def _seed_multipage(db: Database) -> MultipageCorpus:
+    """Corpus mínimo com uma passagem que atravessa duas páginas (T12-01)."""
+    async with db.connection() as conn:
+        work = await WorksRepository(conn).create(Work(canonical_title="Obra Multipágina"))
+        edition = await EditionsRepository(conn).create(
+            Edition(
+                work_id=work.id,
+                title="Obra Multipágina",
+                source_type=SourceType.PDF_TEXT,
+                source_sha256="c" * 64,
+            )
+        )
+        page_0 = Page.create(
+            edition_id=edition.id,
+            physical_index=0,
+            text=_MULTI_START_TEXT,
+            printed_label="p. 1",
+        )
+        page_1 = Page.create(
+            edition_id=edition.id,
+            physical_index=1,
+            text=_MULTI_END_TEXT,
+            printed_label="p. 2",
+        )
+        await PagesRepository(conn).create_many([page_0, page_1])
+
+        versions = VersionsRepository(conn)
+        chunking = await versions.get_or_create(
+            ChunkingVersion(label="chunk-mp", created_at=utcnow())
+        )
+        provider = ConceptEmbeddingProvider()
+        embedding_version = await versions.get_or_create(provider.embedding_version)
+        repo = PassagesRepository(conn)
+
+        span = UUID("c0000000-0000-0000-0000-000000000001")
+        # `char_start` é relativo ao texto de `page_0`; `char_end` ao texto de
+        # `page_1` — mesmo contrato do chunker (NOTES.md §10.6 item 3).
+        await repo.create(
+            Passage(
+                id=span,
+                edition_id=edition.id,
+                ordinal=0,
+                text=_MULTI_TEXT,
+                token_count=len(_MULTI_TEXT.split()),
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding_version.id,
+                page_start_id=page_0.id,
+                page_end_id=page_1.id,
+                char_start=_MULTI_CHAR_START,
+                char_end=_MULTI_CHAR_END,
+            ),
+            embedding=await provider.embed_query(_MULTI_TEXT),
+        )
+        await conn.execute("ANALYZE passages")
+
+    return MultipageCorpus(
+        work=work.id,
+        edition=edition.id,
+        page_0=page_0.id,
+        page_1=page_1.id,
+        span=span,
+    )
+
+
+async def _seed_concepts(db: Database, corpus: Corpus) -> None:
+    """Associa conceitos às passagens do corpus (T12-02): a0/a1 → "liberdade",
+    b0 → "destino" — associação rastreável via `concept_evidence`."""
+    async with db.connection() as conn:
+        versions = VersionsRepository(conn)
+        extractor = await versions.get_or_create(
+            ModelEndpointVersion(
+                label="concept-extractor",
+                endpoint_kind="generator",
+                provider="openai-compatible",
+                model_name="fake-model",
+                created_at=utcnow(),
+            )
+        )
+        concepts = ConceptsRepository(conn)
+        liberdade = await concepts.get_or_create(Concept(normalized_label="liberdade"))
+        destino = await concepts.get_or_create(Concept(normalized_label="destino"))
+        await concepts.add_evidence(liberdade.id, corpus.a0, 1.0, extractor.id)
+        await concepts.add_evidence(liberdade.id, corpus.a1, 1.0, extractor.id)
+        await concepts.add_evidence(destino.id, corpus.b0, 1.0, extractor.id)
+
+
 def _retrieval_service() -> RetrievalService:
     return RetrievalService(ConceptEmbeddingProvider(), FakeRerankerProvider())
 
@@ -375,18 +487,30 @@ async def test_quote_snapshot_with_text_and_metadata(db: Database, tmp_path: Pat
     assert a0_ref.rank == 1
 
 
-async def test_quote_never_calls_generator(db: Database) -> None:
-    """AC-08: o modo quote não chama o provedor de geração — a resposta é
-    só trechos literais do acervo."""
+async def test_quote_has_no_generation_path(db: Database) -> None:
+    """AC-08 — verificação ESTRUCTURAL (T12-03): o modo `quote` não tem caminho
+    de geração. `ContextService` não recebe nenhum provedor de geração em
+    nenhum método (nem `quote` nem `assemble`) e a resposta é só trechos
+    literais do acervo. NÃO é um spy de chamadas: não existe ainda uma
+    orquestração que compone `quote` com geração (pertence a T13), então a
+    asserção estrutural é a evidência honesta disponível."""
     await _seed(db)
-    generator = FakeGeneratorProvider()
     plan = _plan(needs_diversity=False, intent=Intent.FACTUAL)
     quote = await _quote(db, plan=plan, policy=ContextPolicy.defaults())
 
     assert quote.evidences
-    assert generator.requests == []  # nenhuma requisição de geração
     seed_texts = {_A1_TEXT, _A0_EXCERPT, _B0_TEXT}
     assert all(ref.text in seed_texts for ref in quote.evidences)
+
+    # Estrutural: nem `quote` nem `assemble` aceitam provedor de geração.
+    service = ContextService()
+    for name, method in (("quote", service.quote), ("assemble", service.assemble)):
+        provider_params = [
+            p for p in inspect.signature(method).parameters if "generator" in p or "provider" in p
+        ]
+        assert provider_params == [], (
+            f"{name} não deve aceitar provedor de geração (T12-03), recebido {provider_params}"
+        )
 
 
 async def test_opening_origin_reproduces_text(db: Database) -> None:
@@ -402,13 +526,110 @@ async def test_opening_origin_reproduces_text(db: Database) -> None:
             for edition_id in {corpus.edition_a, corpus.edition_b}
         }
     for ref in quote.evidences:
-        page = next(
+        start_page = next(
             p for p in pages_by_edition[ref.edition_id] if p.physical_index == ref.physical_page
         )
-        if ref.char_start is not None and ref.char_end is not None:
-            assert page.text[ref.char_start : ref.char_end] == ref.text
+        if ref.char_start is None or ref.char_end is None:
+            assert start_page.text == ref.text
+            continue
+        if ref.page_end is None or ref.page_end == ref.physical_page:
+            assert start_page.text[ref.char_start : ref.char_end] == ref.text
         else:
-            assert page.text == ref.text
+            # T12-01: passagem multipágina — `char_start` sobre a página de
+            # início, `char_end` sobre a página de fim (NOTES.md §10.6 item 3).
+            end_page = next(
+                p for p in pages_by_edition[ref.edition_id] if p.physical_index == ref.page_end
+            )
+            reconstructed = start_page.text[ref.char_start :] + "\n" + end_page.text[: ref.char_end]
+            assert reconstructed == ref.text
+
+
+async def test_quote_multipage_passage_reproduces_text(db: Database) -> None:
+    """T12-01/AC-03: uma passagem que atravessa páginas é citável — a
+    referência transporta início e fim da localização (IDs, índices físicos,
+    rótulos impressos e offsets relativos a cada página) e a abertura da
+    origem reproduz o trecho exato, incluindo o destaque por página."""
+    corpus = await _seed_multipage(db)
+    plan = _plan(needs_diversity=False, intent=Intent.FACTUAL)
+    retrieval = RetrievalResult(
+        reranked=(
+            RankedCandidate(
+                passage_id=corpus.span,
+                stage=RankingStage.RERANKED,
+                score=1.0,
+                rank=0,
+            ),
+        )
+    )
+    service = ContextService()
+    async with db.connection() as conn:
+        quote = await service.quote(
+            conn,
+            plan=plan,
+            retrieval=retrieval,
+            depth=Depth.STANDARD,
+            policy=ContextPolicy.defaults(),
+        )
+
+    assert len(quote.evidences) == 1
+    ref = quote.evidences[0]
+    assert ref.passage_id == corpus.span
+    assert ref.physical_page == 0
+    assert ref.page_end == 1
+    assert ref.printed_label == "p. 1"
+    assert ref.printed_end_label == "p. 2"
+    assert ref.page_start_id == corpus.page_0
+    assert ref.page_end_id == corpus.page_1
+    assert ref.char_start == _MULTI_CHAR_START
+    assert ref.char_end == _MULTI_CHAR_END
+    assert ref.text == _MULTI_TEXT
+
+    # Reconstrução (abertura da origem) e destaque: com as duas páginas e os
+    # offsets relativos a cada uma, o trecho citado se reproduz exatamente.
+    async with db.connection() as conn:
+        pages = {
+            page.physical_index: page
+            for page in await PagesRepository(conn).list_by_edition(corpus.edition)
+        }
+    start_page = pages[ref.physical_page]
+    end_page = pages[ref.page_end]
+    reconstructed = start_page.text[ref.char_start :] + "\n" + end_page.text[: ref.char_end]
+    assert reconstructed == ref.text
+    # Destaque: cada offset cai dentro do texto da sua própria página.
+    assert ref.char_start <= len(start_page.text)
+    assert ref.char_end <= len(end_page.text)
+
+
+async def test_concept_diversity_changes_selection_in_pipeline(db: Database) -> None:
+    """SPEC §8.6/T12-02: com diversidade, os candidatos que traem um conceito
+    novo são preferidos sobre os que repetem conceitos já cobertos — a
+    diversificação por conceito altera a seleção no pipeline completo
+    (recuperação + montagem)."""
+    corpus = await _seed(db)
+    await _seed_concepts(db, corpus)
+    policy = _context_policy(max_evidences=3, per_edition_limit=10, parent_expansion_chars=0)
+
+    # Sem diversidade: ordem do ranking (a1, a0, b0) prevalece — a0 repete o
+    # conceito de a1 mas fica na posição 2 por relevância.
+    packed_undiverse = await _assemble(
+        db, plan=_plan(needs_diversity=False, intent=Intent.FACTUAL), policy=policy
+    )
+    assert [item.evidence.passage_id for item in packed_undiverse.evidences] == [
+        corpus.a1,
+        corpus.a0,
+        corpus.b0,
+    ]
+
+    # Com diversidade por conceito: b0 (conceito "destino") precede a0
+    # (repetição do conceito "liberdade") — a seleção mudou.
+    packed_diverse = await _assemble(
+        db, plan=_plan(needs_diversity=True, intent=Intent.CONCEPTUAL), policy=policy
+    )
+    assert [item.evidence.passage_id for item in packed_diverse.evidences] == [
+        corpus.a1,
+        corpus.b0,
+        corpus.a0,
+    ]
 
 
 async def test_context_budget_never_exceeded(db: Database) -> None:

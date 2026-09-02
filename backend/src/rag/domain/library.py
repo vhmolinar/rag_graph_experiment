@@ -180,12 +180,19 @@ class Passage(BaseModel):
     def _offsets_coherent(self) -> Self:
         if (self.char_start is None) != (self.char_end is None):
             raise ValueError("char_start e char_end devem ser ambos definidos ou ambos nulos")
-        if (
-            self.char_start is not None
-            and self.char_end is not None
-            and self.char_end <= self.char_start
-        ):
-            raise ValueError("char_end deve ser > char_start")
+        if self.char_start is not None and self.char_end is not None:
+            # T12-R2-01: `char_end > char_start` só vale quando ambos os offsets
+            # referem à MESMA página. Para uma passagem multipágina
+            # (page_start_id != page_end_id), `char_start` é relativo à página
+            # de início e `char_end` à página de fim (NOTES.md §10.6 item 3) —
+            # podem ser invertidos entre páginas e ainda ser corretos.
+            same_page = (
+                self.page_start_id is None
+                or self.page_end_id is None
+                or self.page_start_id == self.page_end_id
+            )
+            if same_page and self.char_end <= self.char_start:
+                raise ValueError("char_end deve ser > char_start")
         return self
 
     @property
