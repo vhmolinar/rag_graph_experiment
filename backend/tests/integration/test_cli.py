@@ -8,6 +8,7 @@ configuração usado em operação real.
 import sys
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -15,8 +16,10 @@ from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 from builders import make_epub
+from model_doubles import FakeEnrichmentProvider
 
 from rag.cli.main import create_app
+from rag.domain.providers import SummaryResult
 from rag.domain.versions import EmbeddingVersion, utcnow
 from rag.infrastructure.schema import EMBEDDING_COLUMN_DIMENSIONS
 
@@ -224,5 +227,106 @@ class TestIndexCommand:
         runner = CliRunner()
         app = create_app(embedding_provider_factory=_FakeEmbeddingProvider)
         result = runner.invoke(app, ["index", "00000000-0000-0000-0000-000000000000"], env=cli_env)
+        assert result.exit_code == 1
+        assert "erro:" in result.output
+
+
+class TestEnrichCommand:
+    """Rota operacional `rag enrich` (T11-01): enriquecimento é acionável e
+    configurado pelo CLI, testado ponta a ponta contra PostgreSQL real."""
+
+    def _app(self) -> Any:
+        return create_app(
+            embedding_provider_factory=_FakeEmbeddingProvider,
+            enrichment_provider_factory=lambda: FakeEnrichmentProvider(),
+        )
+
+    def _seed(
+        self,
+        runner: CliRunner,
+        app: Any,
+        cli_env: dict[str, str],
+        book: tuple[Path, Path],
+    ) -> str:
+        epub, meta = book
+        ingest = runner.invoke(app, ["ingest", str(epub), "--metadata", str(meta)], env=cli_env)
+        assert ingest.exit_code == 0, ingest.output
+        edition_id = ingest.output.split("id=")[1].split()[0]
+        index = runner.invoke(app, ["index", edition_id], env=cli_env)
+        assert index.exit_code == 0, index.output
+        return edition_id
+
+    def test_enrich_after_index_creates_hierarchy(
+        self, cli_env: dict[str, str], book: tuple[Path, Path]
+    ) -> None:
+        runner = CliRunner()
+        app = self._app()
+        edition_id = self._seed(runner, app, cli_env, book)
+
+        result = runner.invoke(app, ["enrich", edition_id], env=cli_env)
+        assert result.exit_code == 0, result.output
+        assert "enriquecimento[criada]" in result.output
+        assert "seção=2" in result.output
+        assert "capítulo=2" in result.output
+        assert "edição=1" in result.output
+        assert "conceitos=" in result.output
+
+    def test_enrich_reexecution_same_version_is_idempotent(
+        self, cli_env: dict[str, str], book: tuple[Path, Path]
+    ) -> None:
+        runner = CliRunner()
+        app = self._app()
+        edition_id = self._seed(runner, app, cli_env, book)
+
+        first = runner.invoke(app, ["enrich", edition_id], env=cli_env)
+        second = runner.invoke(app, ["enrich", edition_id], env=cli_env)
+        assert first.exit_code == 0, first.output
+        assert second.exit_code == 0, second.output
+        assert "enriquecimento[criada]" in first.output
+        assert "enriquecimento[existente]" in second.output
+
+    def test_enrich_failure_publishes_nothing(
+        self, cli_env: dict[str, str], book: tuple[Path, Path]
+    ) -> None:
+        """Falha fechada (suporte fora do escopo) não publica estado parcial —
+        nem itens nem execução de enriquecimento."""
+        runner = CliRunner()
+
+        def _bad_summary(_request: Any) -> SummaryResult:
+            return SummaryResult(text="síntese", supporting_passage_ids=(uuid4(),))
+
+        app = create_app(
+            embedding_provider_factory=_FakeEmbeddingProvider,
+            enrichment_provider_factory=lambda: FakeEnrichmentProvider(
+                summary_factory=_bad_summary
+            ),
+        )
+        edition_id = self._seed(runner, app, cli_env, book)
+
+        result = runner.invoke(app, ["enrich", edition_id], env=cli_env)
+        assert result.exit_code == 1
+        assert "erro:" in result.output
+        with psycopg.connect(
+            host=cli_env["POSTGRES_HOST"],
+            port=cli_env["POSTGRES_PORT"],
+            dbname=cli_env["POSTGRES_DB"],
+            user=cli_env["POSTGRES_USER"],
+            password=cli_env["POSTGRES_PASSWORD"],
+        ) as conn:
+            summaries_row = conn.execute("SELECT count(*) FROM summaries").fetchone()
+            runs_row = conn.execute("SELECT count(*) FROM enrichment_runs").fetchone()
+        assert summaries_row is not None
+        assert runs_row is not None
+        assert summaries_row[0] == 0
+        assert runs_row[0] == 0
+
+    def test_enrich_unknown_edition_exit_one(self, cli_env: dict[str, str]) -> None:
+        runner = CliRunner()
+        app = self._app()
+        result = runner.invoke(
+            app,
+            ["enrich", "00000000-0000-0000-0000-000000000000"],
+            env=cli_env,
+        )
         assert result.exit_code == 1
         assert "erro:" in result.output

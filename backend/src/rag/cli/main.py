@@ -35,12 +35,17 @@ from rag.adapters.embedding_adapter import (
     EmbeddingEndpointSettings,
     OpenAiCompatibleEmbeddingProvider,
 )
+from rag.adapters.enrichment_adapter import (
+    EnrichmentEndpointSettings,
+    OpenAiCompatibleEnrichmentProvider,
+)
 from rag.adapters.ocr_adapter import DoclingOcrEngine, OcrEngine, ocr_pdf
+from rag.application.enrichment import EnrichmentService
 from rag.application.index import IndexingService
 from rag.application.ingest import IngestionService, load_metadata
 from rag.domain.chunking import ChunkingParams
 from rag.domain.errors import RagError
-from rag.domain.providers import EmbeddingProvider
+from rag.domain.providers import EmbeddingProvider, EnrichmentProvider
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.config import ChunkingSettings, DatabaseSettings, StorageSettings
 from rag.infrastructure.db import Database
@@ -200,6 +205,10 @@ def _default_embedding_provider() -> EmbeddingProvider:
     return OpenAiCompatibleEmbeddingProvider(EmbeddingEndpointSettings())
 
 
+def _default_enrichment_provider() -> EnrichmentProvider:
+    return OpenAiCompatibleEnrichmentProvider(EnrichmentEndpointSettings())
+
+
 def _resolve_chunking_params(overrides: dict[str, int | None]) -> ChunkingParams:
     """Env (`CHUNKING_*`) primeiro; opções explícitas de CLI sobrepõem (T6-07)."""
     base = ChunkingSettings().model_dump()
@@ -251,13 +260,47 @@ async def _index_async(
     return 0, chunking_params
 
 
+async def _enrich_async(
+    edition_id: UUID,
+    enrichment_provider_factory: Callable[[], EnrichmentProvider],
+) -> int:
+    """Enriquecimento hierárquico (SPEC §7.4, T11): sínteses de
+    seção/capítulo/edição e conceitos sobre a execução ativa de indexação."""
+    provider = enrichment_provider_factory()
+    service = EnrichmentService(provider)
+    settings = EnrichmentEndpointSettings()
+    db = Database(DatabaseSettings())
+    await db.open()
+    try:
+        async with db.connection() as conn:
+            report = await service.enrich(conn, edition_id=edition_id, model_name=settings.model)
+    finally:
+        aclose = getattr(provider, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        await db.close()
+    mode = "criada" if report.created else "existente"
+    typer.echo(
+        f"enriquecimento[{mode}] edição={report.edition_id} "
+        f"seção={report.summaries_section} capítulo={report.summaries_chapter} "
+        f"edição={report.summaries_edition} conceitos={report.concepts} "
+        f"aliases={report.concept_aliases} evidências={report.concept_evidences} "
+        f"summarizer_version={report.summarizer_version_id} "
+        f"extractor_version={report.extractor_version_id}"
+    )
+    for warning in report.warnings:
+        typer.echo(f"aviso: {warning}")
+    return 0
+
+
 def create_app(
     engine_factory: Callable[[str], OcrEngine] = DoclingOcrEngine,
     embedding_provider_factory: Callable[[], EmbeddingProvider] = _default_embedding_provider,
+    enrichment_provider_factory: Callable[[], EnrichmentProvider] = _default_enrichment_provider,
 ) -> typer.Typer:
     app = typer.Typer(
         name="rag",
-        help="RAG de livros — ingestão, OCR e inspeção (fase 1, local).",
+        help="RAG de livros — ingestão, OCR, inspeção e enriquecimento (fase 1, local).",
         no_args_is_help=True,
     )
 
@@ -372,6 +415,31 @@ def create_app(
             force=force,
             **resolved_params.model_dump(),
         )
+        raise typer.Exit(code=code)
+
+    @app.command()
+    def enrich(
+        edition_id: Annotated[str, typer.Argument(help="UUID da edição")],
+    ) -> None:
+        """Sínteses hierárquicos e conceitos sobre a execução ativa de indexação."""
+        try:
+            parsed = UUID(edition_id)
+        except ValueError:
+            typer.secho("erro: edition-id deve ser um UUID.", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1) from None
+        log = structlog.get_logger()
+        log.info("enrich.started", edition_id=str(parsed))
+        try:
+            code = asyncio.run(_enrich_async(parsed, enrichment_provider_factory))
+        except RagError as exc:
+            log.info("enrich.failed", edition_id=str(parsed), error=exc.message)
+            _echo_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            log.exception("enrich.unexpected_error", edition_id=str(parsed))
+            typer.secho(f"erro inesperado: {type(exc).__name__}", err=True)
+            raise typer.Exit(code=2) from exc
+        log.info("enrich.finished", edition_id=str(parsed))
         raise typer.Exit(code=code)
 
     @app.command(name="backfill-fingerprint")

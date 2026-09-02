@@ -789,13 +789,15 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
    (modelo ou prompt distintos) cria NOVOS registros — histórico nunca é
    sobrescrito (test: "reexecução com nova versão não sobrescreve histórico").
    Não há `--force` em T11: apagar registros antigos violaría a garantia.
-5. **Idempotência por (edição, versão).** Se a edição já tem resumos da
-   versão desta execução, a execução é no-op (mesmo espírito de `rag index`
-   sem `--force`). A identidade de uma execução é a versão de síntese; toda
-   a execução corre numa única transação, então "tem sínteses desta versão"
-   implica a execução concluíu — incluindo conceitos (que podem
-   legitimamente ser zero em conteúdo). Falha rollbacka tudo, nunca publica
-   estado parcial.
+5. **Idempotência por (edição, versão), registrada como execução concluída —
+   não pela existência de itens.** A identidade de uma execução é a versão de
+   síntese (`summarizer_version_id`), registrada em `enrichment_runs` na MESMA
+   transação dos itens publicados (correção T11-03). O registro existe MESMO
+   quando nenhum item é publicado (todos os suportes rejeitados — suporte
+   vazio é comportamento legítimo do provedor, item 2): "tem execução desta
+   versão" implica a execução concluíu, e reexecutar a mesma versão é no-op
+   reprodutível. Conceitos podem legitimamente ser zero em conteúdo. Falha
+   rollbacka tudo (itens e execução), nunca publica estado parcial.
 6. **Escopos de suporte validados fechados no serviço.** Resumo de seção:
    suportes ⊆ passagens-filho diretas da seção. Resumo de capítulo (Section
    de topo, level=0): suportes ⊆ passagens-filho das seções DESCENDENTES do
@@ -832,10 +834,14 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
     `ModelAuthSettings`/`ResilienceSettings` (T07); configuração `ENRICHMENT_*`.
     Retries só cobrem falhas transitórias; 4xx/payload inválido falham
     fechados (mesma regra de T07, NOTES.md §10.8 item 1).
-12. **Sem comando CLI em T11** (não consta nos entregáveis; os comandos de
-    fase 1 continuam sendo ingest/ocr/index/inspect). O enriquecimento é
-    invocado via `EnrichmentService`; integração no CLI/API fica para T14+
-    se a operação o exigir.
+12. **Comando `rag enrich <edition-id>`** (correção T11-01). O enriquecimento
+    é acionável e configurado pela operação (`EnrichmentService` +
+    `OpenAiCompatibleEnrichmentProvider`, env `ENRICHMENT_*`), não só uma API
+    interna: `rag ingest` → `rag index` → `rag enrich` produz as sínteses e
+    conceitos em operação (SPEC §7.4 "Após a indexação das passagens"). A
+    rota operacional é testada ponta a ponta, inclusive falha fechada sem
+    publicação parcial. A integração no API fica para T14 se a operação o
+    exigir.
 
 ## 11. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T10)
 
@@ -858,3 +864,37 @@ Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T10.md`
    `http://` continua permitido.
 5. **AC-07 permanece parcial.** A cobertura de T10 vale para planejamento e
    recuperação; o critério global exige a prova ponta a ponta de T13.
+
+## 12. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T11)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T11.md`
+(T11-01 a T11-03). Elas complementam o registro §10.12.
+
+1. **Enriquecimento integrado à operação via `rag enrich` (T11-01).** O
+   desvio anterior ("integração fica para T14+") é revocado: a rota
+   operacional `rag enrich <edition-id>` (SPEC §7.4 "Após a indexação das
+   passagens") é acionável/configurada via `EnrichmentService` +
+   `OpenAiCompatibleEnrichmentProvider` (env `ENRICHMENT_*`) e testada ponta
+   a ponta no CLI, inclusive falha fechada sem publicação parcial.
+2. **Enriquecimento opera sobre a execução ativa de indexação (T11-02).**
+   `EnrichmentService.enrich()` resolve a `IndexRun` ativa da edição e usa
+   `PassagesRepository.list_by_index_run()` — nunca `list_by_edition()` (que
+   inclui histórico). Sínteses e conceitos representam o conjunto indexado
+   corrente; passagens de execuções inativas nunca chegam ao provedor nem
+   viram suporte. Integração com duas reindexações prova essa garantia.
+3. **Idempotência por execução de enriquecimento, não por existência de
+   itens (T11-03).** Nova migration `0005` cria `enrichment_runs`; a execução
+   concluída (inclusive sem itens publicados) é registrada na MESMA transação
+   dos itens. Reexecutar a mesma identidade é no-op reprodutível; a identidade
+   NOVA acumula histórico sem sobrescrever (AC-15).
+4. **`index_run_id` integra a identidade de `enrichment_runs` (R2-T11-01).** A
+   chave de idempotência de uma execução de enriquecimento é
+   `(edition_id, index_run_id, summarizer_version_id)`: `index_run_id` — o
+   conjunto de passagens efetivamente enviado ao provedor — NÃO pode ficar de
+   fora, ou reindexar a edição com o MESMO modelo de enriquecimento seria um
+   no-op e as sínteses continuariam sustentadas por chunks inativos (viola
+   T11-02, SPEC §7.4/§8.7, AC-15). Reindexar minta uma nova execução de
+   enriquecimento sobre o conjunto corrente; execuções anteriores ficam
+   preservadas como histórico. Migration `0005` inclui a coluna `index_run_id`
+   (FK composta `(index_run_id, edition_id) → index_runs(id, edition_id)`) e a
+   unicidade por `(edition_id, index_run_id, summarizer_version_id)`.
