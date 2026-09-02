@@ -3,6 +3,9 @@
 Aplicação RAG privada e local para acervo de livros em português. Especificação em
 `docs/rag/SPECIFICATION.md`; decisões em `docs/rag/NOTES.md`; tarefas em `docs/rag/TASKS.md`.
 
+Tutorial prático para testar o estado atual com um livro:
+`docs/rag/TUTORIAL_TESTE_COM_UM_LIVRO.md`.
+
 ## Pré-requisitos
 
 - Python 3.12 (`requires-python = ">=3.12,<3.13"`)
