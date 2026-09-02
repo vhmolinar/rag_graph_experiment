@@ -1,7 +1,7 @@
 """Tabela de versão da política de montagem de contexto (T12; SPEC §6, AC-15).
 
-Revision ID: 0003
-Revises: 0002
+Revision ID: 0006
+Revises: 0005
 Create Date: 2026-08-30
 
 A política de contexto (número de evidências, orçamento de contexto,
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0003"
-down_revision: str | None = "0002"
+revision: str = "0006"
+down_revision: str | None = "0005"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

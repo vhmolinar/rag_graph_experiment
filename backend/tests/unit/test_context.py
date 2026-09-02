@@ -28,6 +28,7 @@ def _candidate(
     score: float = 1.0,
     parent_text: str | None = None,
     parent_passage_id: UUID | None = None,
+    concepts: tuple[str, ...] = (),
 ) -> ContextCandidate:
     return ContextCandidate(
         passage=CitablePassage(
@@ -37,6 +38,7 @@ def _candidate(
             text=text,
             parent_text=parent_text,
             parent_passage_id=parent_passage_id,
+            concepts=concepts,
         ),
         score=score,
         rank=rank,
@@ -58,6 +60,51 @@ def _budget(
         parent_expansion_chars=parent_expansion_chars,
         per_edition_limit=per_edition_limit,
     )
+
+
+def _citable(
+    *,
+    physical_page: int | None = None,
+    page_end: int | None = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
+) -> CitablePassage:
+    return CitablePassage(
+        passage_id=uuid4(),
+        edition_id=uuid4(),
+        work_id=uuid4(),
+        text="trecho literal",
+        physical_page=physical_page,
+        page_end=page_end,
+        char_start=char_start,
+        char_end=char_end,
+    )
+
+
+class TestCitablePassageOffsets:
+    def test_multipage_offsets_valid_when_inverted_between_pages(self) -> None:
+        """T12-R2-01: para páginas distintas, `char_start` (relativo à página
+        inicial) e `char_end` (relativo à página final) podem ser invertidos —
+        ex.: início no offset 100 da página 10, fim no offset 3 da página 11."""
+        passage = _citable(physical_page=10, page_end=11, char_start=100, char_end=3)
+        assert passage.char_start == 100
+        assert passage.char_end == 3
+
+    def test_same_page_offsets_require_char_end_gt_char_start(self) -> None:
+        """T12-R2-01: na MESMA página (ou sem informação de página), a
+        comparação `char_end > char_start` continua a valer."""
+        with pytest.raises(ValidationError, match="char_end"):
+            _citable(physical_page=10, page_end=10, char_start=100, char_end=3)
+        with pytest.raises(ValidationError, match="char_end"):
+            _citable(char_start=100, char_end=3)
+
+    def test_offsets_paired(self) -> None:
+        with pytest.raises(ValidationError):
+            _citable(char_start=3)
+
+    def test_page_end_must_not_precede_page_start(self) -> None:
+        with pytest.raises(ValidationError, match="page_end"):
+            _citable(physical_page=3, page_end=2)
 
 
 class TestContextPolicy:
@@ -236,6 +283,82 @@ class TestSelectEvidences:
         )
         assert [item.evidence.text for item in selected] == ["a0", "a1", "b0"]
         assert len(selected) == 3  # < max_evidences: nada se preenche
+
+    def test_concept_diversity_changes_selection(self) -> None:
+        """SPEC §8.6/T12-02: com diversidade, candidatos que traem um conceito
+        novo são preferidos sobre os que repetem conceitos já cobertos — a
+        diversificação por conceito altera a seleção (sem quota cega)."""
+        edition = uuid4()
+        candidates = [
+            _candidate(text="c0", edition_id=edition, rank=0, concepts=("liberdade",)),
+            _candidate(text="c1", edition_id=edition, rank=1, concepts=("liberdade",)),
+            _candidate(text="c2", edition_id=edition, rank=2, concepts=("destino",)),
+        ]
+        undiverse = select_evidences(
+            candidates,
+            budget=_budget(max_evidences=3, per_edition_limit=10),
+            needs_diversity=False,
+        )
+        diverse = select_evidences(
+            candidates,
+            budget=_budget(max_evidences=3, per_edition_limit=10),
+            needs_diversity=True,
+        )
+        # Sem diversidade, a ordem do ranking prevalece.
+        assert [item.evidence.text for item in undiverse] == ["c0", "c1", "c2"]
+        # Com diversidade, c2 (conceito novo) precede c1 (repetição do conceito).
+        assert [item.evidence.text for item in diverse] == ["c0", "c2", "c1"]
+
+    def test_concept_diversity_is_flexible_not_quota(self) -> None:
+        """SPEC §8.6/T12-02: NUNCA se impõe quota cega por conceito — se um
+        conceito tiver um único candidato, a seleção não se preenche para
+        atingir `max_evidences`."""
+        edition = uuid4()
+        candidates = [
+            _candidate(text="c0", edition_id=edition, rank=0, concepts=("liberdade",)),
+            _candidate(text="c1", edition_id=edition, rank=1, concepts=("liberdade",)),
+            _candidate(text="c2", edition_id=edition, rank=2, concepts=("destino",)),
+        ]
+        selected = select_evidences(
+            candidates,
+            budget=_budget(max_evidences=4, per_edition_limit=10),
+            needs_diversity=True,
+        )
+        # max_evidences=4 mas só 3 candidatos: nada se preenche.
+        assert [item.evidence.text for item in selected] == ["c0", "c2", "c1"]
+        assert len(selected) == 3
+
+    def test_multipage_metadata_projected_on_evidence(self) -> None:
+        """T12-01/AC-03: uma passagem multipágina projeta início e fim da
+        localização (páginas físicas, rótulos e offsets relativos a cada
+        uma) no `EvidenceRef`."""
+        candidate = ContextCandidate(
+            passage=CitablePassage(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="início na página 1 e fim na página 2",
+                physical_page=3,
+                page_end=4,
+                printed_label="p. 3",
+                printed_end_label="p. 4",
+                char_start=10,
+                char_end=20,
+                concepts=("destino",),
+            ),
+            score=0.9,
+            rank=0,
+        )
+        selected = select_evidences([candidate], budget=_budget(), needs_diversity=False)
+        ref = selected[0].evidence
+        assert ref.physical_page == 3
+        assert ref.page_end == 4
+        assert ref.printed_label == "p. 3"
+        assert ref.printed_end_label == "p. 4"
+        assert ref.char_start == 10
+        assert ref.char_end == 20
+        assert ref.page_start_id == candidate.passage.page_start_id
+        assert ref.page_end_id == candidate.passage.page_end_id
 
     def test_evidence_refs_carry_citable_metadata(self) -> None:
         """AC-03/AC-08: cada evidência expõe obra, edição, seção, página e

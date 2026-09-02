@@ -121,6 +121,57 @@ class TestEvidenceRef:
                 char_start=3,
             )
 
+    def test_multipage_offsets_valid_when_inverted_between_pages(self) -> None:
+        """T12-R2-01: para páginas distintas, `char_start` (relativo à página
+        inicial) e `char_end` (relativo à página final) podem ser invertidos —
+        ex.: início no offset 100 da página 10, fim no offset 3 da página 11 —
+        e a referência é válida e reproduzível."""
+        ref = EvidenceRef(
+            passage_id=uuid4(),
+            edition_id=uuid4(),
+            work_id=uuid4(),
+            text="trecho multipágina",
+            score=0.9,
+            rank=0,
+            physical_page=10,
+            page_end=11,
+            printed_label="p. 10",
+            printed_end_label="p. 11",
+            char_start=100,
+            char_end=3,
+        )
+        assert ref.char_start == 100
+        assert ref.char_end == 3
+
+    def test_same_page_offsets_require_char_end_gt_char_start(self) -> None:
+        """T12-R2-01: na MESMA página (ou sem informação de página), a
+        comparação `char_end > char_start` continua a valer."""
+        with pytest.raises(ValidationError, match="char_end"):
+            EvidenceRef(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="trecho",
+                score=0.9,
+                rank=0,
+                physical_page=10,
+                page_end=10,
+                char_start=100,
+                char_end=3,
+            )
+        # Sem informação de página (EPUB/backwards compat), também rejeitado.
+        with pytest.raises(ValidationError, match="char_end"):
+            EvidenceRef(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="trecho",
+                score=0.9,
+                rank=0,
+                char_start=100,
+                char_end=3,
+            )
+
     def test_full_reference(self) -> None:
         ref = EvidenceRef(
             passage_id=uuid4(),
@@ -136,6 +187,53 @@ class TestEvidenceRef:
             char_end=30,
         )
         assert ref.physical_page == 42
+        # T12-01: a referência expõe a página de fim (para uma passagem de
+        # página única, o banco devolve page_end == physical_page).
+        assert ref.page_end is None
+        assert ref.page_end_id is None
+
+    def test_multipage_reference_carries_end_page(self) -> None:
+        """T12-01/AC-03: a referência transporta início e fim da localização —
+        IDs e índices físicos de ambas as páginas, rótulos e offsets."""
+        start_id = uuid4()
+        end_id = uuid4()
+        ref = EvidenceRef(
+            passage_id=uuid4(),
+            edition_id=uuid4(),
+            work_id=uuid4(),
+            text="trecho multipágina",
+            score=0.9,
+            rank=0,
+            section_path=("Obra", "Capítulo I"),
+            page_start_id=start_id,
+            page_end_id=end_id,
+            physical_page=1,
+            page_end=2,
+            printed_label="p. 1",
+            printed_end_label="p. 2",
+            char_start=4,
+            char_end=7,
+        )
+        assert ref.page_start_id == start_id
+        assert ref.page_end_id == end_id
+        assert ref.page_end == 2
+        assert ref.printed_end_label == "p. 2"
+        # o offset `char_end` é relativo à página de fim; `char_start` à de início.
+        assert ref.char_start == 4
+        assert ref.char_end == 7
+
+    def test_page_end_must_not_precede_page_start(self) -> None:
+        with pytest.raises(ValidationError, match="page_end"):
+            EvidenceRef(
+                passage_id=uuid4(),
+                edition_id=uuid4(),
+                work_id=uuid4(),
+                text="trecho",
+                score=0.9,
+                rank=0,
+                physical_page=3,
+                page_end=2,
+            )
 
 
 class TestVerificationResult:

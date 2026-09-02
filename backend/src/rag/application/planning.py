@@ -7,13 +7,20 @@ para resolver filtros naturais. Produz um `QueryPlan` validado, com estratégia
 RESOLVIDA e explicação estruturada (SPEC §8.3).
 
 Filtros inferidos ficam em `QueryPlan.inferred_filters` (voltam ao cliente como
-chips editáveis); a prioridade de filtros explícitos é aplicada via
-`domain.planning.merge_filters` antes da recuperação (NOTES.md §10.11 item 7).
+chips editáveis); `QueryPlan.effective_filters` é o filtro efetivo com a
+prioridade de filtros explícitos aplicada via `domain.planning.merge_filters`
+antes da recuperação (SPEC §8.2, AC-07; T10-01 da revisão).
+
+A estratégia `expanded` exige um provedor de planejamento: sem provedor não há
+geração limitada de subperguntas/aliases, e o plano NUNCA declara expansão sem
+expansão a executar — falha fechada com `ModelUnavailableError` (T10-02 da
+revisão).
 """
 
 from psycopg import AsyncConnection
 
 from rag.domain.enums import SearchStrategy
+from rag.domain.errors import ModelUnavailableError
 from rag.domain.planning import (
     CatalogEntry,
     build_lexical_query,
@@ -21,6 +28,7 @@ from rag.domain.planning import (
     classify_intent,
     diversity_for,
     hierarchical_for,
+    merge_filters,
     normalize_text,
     resolve_natural_filters,
     resolve_strategy,
@@ -46,7 +54,12 @@ class PlannerService:
         subquestions: tuple[str, ...] = ()
         aliases: tuple[str, ...] = ()
         concept_labels: tuple[str, ...] = ()
-        if strategy is SearchStrategy.EXPANDED and self._provider is not None:
+        if strategy is SearchStrategy.EXPANDED:
+            if self._provider is None:
+                raise ModelUnavailableError(
+                    "A estratégia 'expanded' exige um provedor de planejamento "
+                    "configurado; sem provedor não há expansão a executar."
+                )
             suggestion = await self._provider.plan(
                 PlanningRequest(question=question, depth=request.depth)
             )
@@ -59,6 +72,7 @@ class PlannerService:
 
         catalog = await self._load_catalog(conn)
         inferred = resolve_natural_filters(question, catalog)
+        effective = merge_filters(request.explicit_filter(), inferred)
 
         return QueryPlan(
             intent=intent,
@@ -70,6 +84,7 @@ class PlannerService:
             aliases=aliases,
             concept_labels=concept_labels,
             inferred_filters=inferred,
+            effective_filters=effective,
             needs_diversity=diversity_for(intent),
             needs_hierarchical=hierarchical_for(intent),
         )

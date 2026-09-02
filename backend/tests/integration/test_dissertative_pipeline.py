@@ -39,6 +39,7 @@ from rag.domain.library import Edition, Page, Passage, Section, Work
 from rag.domain.providers import GenerationRequest
 from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan, StrategyExplanation
 from rag.domain.retrieval import RetrievalPolicy
+from rag.domain.runs import AnswerRun
 from rag.domain.verification import VerificationBudget, VerificationPolicy
 from rag.domain.versions import (
     ChunkingVersion,
@@ -52,6 +53,7 @@ from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
+from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
 
@@ -304,6 +306,13 @@ async def _packed(
     db: Database, *, plan: QueryPlan, filters: EditionFilter | None = None
 ) -> "PackedContext":
     async with db.connection() as conn:
+        run = await AnswerRunsRepository(conn).create(
+            AnswerRun(
+                question_original="Consulta dissertativa de teste.",
+                question_anonymized="Consulta dissertativa de teste.",
+                explicit_filters=filters or EditionFilter(),
+            )
+        )
         retrieval = await _retrieval_service().retrieve(
             conn,
             lexical_query=plan.lexical_query,
@@ -311,6 +320,7 @@ async def _packed(
             filters=filters,
             policy=RetrievalPolicy.defaults(),
             depth=Depth.STANDARD,
+            run=run,
         )
         return await ContextService().assemble(
             conn,

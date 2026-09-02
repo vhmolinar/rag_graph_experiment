@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag.domain.enums import ConceptState, SummaryScope
 from rag.domain.errors import IngestionError, ModelResponseError, NotFoundError
 from rag.domain.identifiers import sha256_of_text
-from rag.domain.knowledge import Concept, Summary, descendant_section_ids
+from rag.domain.knowledge import Concept, EnrichmentRun, Summary, descendant_section_ids
 from rag.domain.library import Edition, Section, Work
 from rag.domain.providers import (
     ConceptExtractRequest,
@@ -37,7 +37,12 @@ from rag.domain.providers import (
 from rag.domain.versions import ModelEndpointVersion, PromptVersion, utcnow
 from rag.infrastructure.repositories.content import SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
-from rag.infrastructure.repositories.enrichment import ConceptsRepository, SummariesRepository
+from rag.infrastructure.repositories.enrichment import (
+    ConceptsRepository,
+    EnrichmentRunsRepository,
+    SummariesRepository,
+)
+from rag.infrastructure.repositories.index_runs import IndexRunsRepository
 from rag.infrastructure.repositories.passages import PassagesRepository
 from rag.infrastructure.repositories.versions import VersionsRepository
 from rag.infrastructure.repositories.works import WorksRepository
@@ -108,7 +113,17 @@ class EnrichmentService:
             raise NotFoundError("Obra da edição não encontrada.")
 
         sections = await SectionsRepository(conn).list_by_edition(edition.id)
-        passages = await PassagesRepository(conn).list_by_edition(edition.id)
+        # T11-02: o enriquecimento opera sobre a EXECUÇÃO ATIVA de indexação —
+        # nunca sobre passagens de execuções inativas (histórico). Recuperação e
+        # enriquecimento usam o mesmo conjunto corrente (T6-01), para que sínteses
+        # e conceitos representem o índice vigente.
+        active_run = await IndexRunsRepository(conn).get_active(edition.id)
+        if active_run is None:
+            raise IngestionError(
+                "Edição sem passagens indexadas; rode `rag index` primeiro.",
+                context={"edition_id": str(edition.id)},
+            )
+        passages = await PassagesRepository(conn).list_by_index_run(active_run.id)
         child_passages = [p for p in passages if p.embedding_version_id is not None]
         if not child_passages:
             raise IngestionError(
@@ -124,12 +139,19 @@ class EnrichmentService:
         ) = await self._register_versions(conn, model_name)
         summaries_repo = SummariesRepository(conn)
         concepts_repo = ConceptsRepository(conn)
-        # Idempotência por (edição, versão): a identidade de uma execução é a
-        # versão de síntese. Toda a execução corre numa única transação, então
-        # "tem sínteses desta versão" implica a execução concluíu — incluindo
-        # conceitos (que podem legitimamente ser zero em conteúdo).
-        already = await summaries_repo.has_for_edition_version(edition.id, summarizer_version.id)
-        if already:
+        # Idempotência por (edição, execução de indexação, versão de síntese):
+        # a identidade de uma execução é o conjunto de passagens efetivamente
+        # enviado ao provedor (`index_run_id`, R2-T11-01) + versão de síntese,
+        # registrada como `EnrichmentRun` na MESMA transação dos itens —
+        # inclusive quando NENHUM item é publicado (T11-03). "Tem execução
+        # desta identidade" implica a execução concluíu; conceitos podem
+        # legitimamente ser zero em conteúdo. Reindexar (nova execução ativa)
+        # com o mesmo modelo NÃO é no-op: a identidade mudou.
+        runs_repo = EnrichmentRunsRepository(conn)
+        already = await runs_repo.get_for_edition_run_version(
+            edition.id, active_run.id, summarizer_version.id
+        )
+        if already is not None:
             return await self._existing_report(
                 conn, edition.id, summarizer_version.id, extractor_version.id
             )
@@ -295,11 +317,27 @@ class EnrichmentService:
                 )
             )
 
-        # 5. Persistência numa única transação (model calls concluíram acima).
+        # 5. Persistência numa única transação (model calls concluíram acima):
+        # itens e a execução de enriquecimento (T11-03) vão juntos — falha
+        # rollbacka tudo, inclusive o registro da execução; reexecutar a MESMA
+        # versão repete nada.
         concepts_created = 0
         aliases_created = 0
         evidences_created = 0
         async with conn.transaction():
+            if not await runs_repo.create_if_absent(
+                EnrichmentRun(
+                    edition_id=edition.id,
+                    index_run_id=active_run.id,
+                    summarizer_version_id=summarizer_version.id,
+                    extractor_version_id=extractor_version.id,
+                )
+            ):
+                # Corrida de concorrência: outra execução da mesma versão já foi
+                # registrada — nada novo a publicar (comportamento idempotente).
+                return await self._existing_report(
+                    conn, edition.id, summarizer_version.id, extractor_version.id
+                )
             for summary in pending_summaries:
                 await summaries_repo.create(summary)
             for label, description, aliases, supports in pending_concepts:

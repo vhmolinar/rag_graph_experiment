@@ -57,7 +57,15 @@ class GeneratedAnswer(BaseModel):
 
 
 class EvidenceRef(BaseModel):
-    """Referência citável: edição, seção, página física/impressa e offsets."""
+    """Referência citável: edição, seção, páginas (início/fim) e offsets.
+
+    T12-01 (AC-03): uma passagem pode abranger várias páginas físicas. A
+    referência transporta início e fim da localização — IDs e índices
+    físicos de AMBAS as páginas, com os rótulos impressos e os offsets
+    relativos a cada uma (`char_start` sobre `physical_page`, `char_end`
+    sobre `page_end`). Para uma passagem de página única, `page_end` é igual
+    a `physical_page` (e `printed_end_label` a `printed_label`).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -68,8 +76,12 @@ class EvidenceRef(BaseModel):
     score: float
     rank: int = Field(ge=0)
     section_path: tuple[str, ...] = Field(default_factory=tuple)
+    page_start_id: UUID | None = None
+    page_end_id: UUID | None = None
     physical_page: int | None = Field(default=None, ge=0)
+    page_end: int | None = Field(default=None, ge=0)
     printed_label: str | None = None
+    printed_end_label: str | None = None
     char_start: int | None = Field(default=None, ge=0)
     char_end: int | None = Field(default=None, ge=0)
 
@@ -77,12 +89,25 @@ class EvidenceRef(BaseModel):
     def _offsets_coherent(self) -> Self:
         if (self.char_start is None) != (self.char_end is None):
             raise ValueError("char_start e char_end devem ser ambos definidos ou ambos nulos")
+        if self.char_start is not None and self.char_end is not None:
+            # T12-R2-01: `char_end > char_start` só vale quando ambos os offsets
+            # referem à MESMA página. Para uma passagem multipágina, `char_start`
+            # é relativo à `physical_page` e `char_end` à `page_end` — podem ser
+            # invertidos entre páginas (ex.: início no offset 100 da página A,
+            # fim no offset 3 da página B) e ainda ser corretos.
+            same_page = (
+                self.page_end is None
+                or self.physical_page is None
+                or self.page_end == self.physical_page
+            )
+            if same_page and self.char_end <= self.char_start:
+                raise ValueError("char_end deve ser > char_start")
         if (
-            self.char_start is not None
-            and self.char_end is not None
-            and self.char_end <= self.char_start
+            self.physical_page is not None
+            and self.page_end is not None
+            and self.page_end < self.physical_page
         ):
-            raise ValueError("char_end deve ser > char_start")
+            raise ValueError("page_end deve ser >= physical_page")
         return self
 
 

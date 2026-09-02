@@ -1,10 +1,10 @@
 # Quarta revisão T05
 
-Data: 2026-08-29  
-Commit revisado: `97309a32880c3a0583aecd66d91fd463e8391346`  
+Data: 2026-08-29
+Commit revisado: `97309a32880c3a0583aecd66d91fd463e8391346`
 Referências: `docs/rag/REVIEW_T05.md`,
 `docs/rag/REVIEW_T05_ROUND2.md`,
-`docs/rag/REVIEW_T05_ROUND3.md`  
+`docs/rag/REVIEW_T05_ROUND3.md`
 Resultado: **APROVADA**
 
 ## Veredito

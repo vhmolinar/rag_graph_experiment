@@ -7,9 +7,11 @@ O domínio mantém, independente de framework:
   limite flexível por edição), versionado via `ContextPolicyVersion`
   (SPEC §6, AC-15);
 - `CitablePassage`/`ContextCandidate`: metadados citáveis (AC-03) unidos à
-  posição do ranking;
+  posição do ranking — incluindo início/fim de páginas (T12-01) e conceitos
+  associados (T12-02);
 - `select_evidences`: seleção pura com deduplicação, diversidade adaptativa
-  (SPEC §8.6) e respeito do orçamento de contexto (SPEC §9.1);
+  (SPEC §8.6 — por edição e por conceito) e respeito do orçamento de
+  contexto (SPEC §9.1);
 - `PackedContext`: contexto montado, com garantia estrutural de que o
   orçamento declarado nunca é excedido.
 
@@ -128,9 +130,13 @@ class CitablePassage(BaseModel):
     """Passagem com metadados citáveis (T12; AC-03).
 
     `PassagesRepository.get_citable` resolve os joins de uma vez: seção
-    (path), página física e rótulo impresso (início), obra (`work_id`) e a
-    passagem-pai (`parent_text`) para expansão de contexto. `parent_text` é
-    contexto adicional e NUNCA é texto citável (SPEC §7.3).
+    (path), páginas física/impressa de INÍCIO e FIM (T12-01), obra
+    (`work_id`), a passagem-pai (`parent_text`) para expansão de contexto e
+    os conceitos associados (`concepts`, SPEC §8.6/T12-02 — associação
+    rastreável via `concept_evidence`). `parent_text` é contexto adicional e
+    NUNCA é texto citável (SPEC §7.3). Para uma passagem de página única,
+    `page_end`/`printed_end_label` coincidem com `physical_page`/
+    `printed_label`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -140,23 +146,41 @@ class CitablePassage(BaseModel):
     work_id: UUID
     text: str = Field(min_length=1)
     section_path: tuple[str, ...] = Field(default_factory=tuple)
+    page_start_id: UUID | None = None
+    page_end_id: UUID | None = None
     physical_page: int | None = Field(default=None, ge=0)
+    page_end: int | None = Field(default=None, ge=0)
     printed_label: str | None = None
+    printed_end_label: str | None = None
     char_start: int | None = Field(default=None, ge=0)
     char_end: int | None = Field(default=None, ge=0)
     parent_passage_id: UUID | None = None
     parent_text: str | None = None
+    concepts: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
 
     @model_validator(mode="after")
     def _offsets_coherent(self) -> Self:
         if (self.char_start is None) != (self.char_end is None):
             raise ValueError("char_start e char_end devem ser ambos definidos ou ambos nulos")
+        if self.char_start is not None and self.char_end is not None:
+            # T12-R2-01: `char_end > char_start` só vale quando ambos os offsets
+            # referem à MESMA página. Para uma passagem multipágina, `char_start`
+            # é relativo à `physical_page` e `char_end` à `page_end` — podem ser
+            # invertidos entre páginas (ex.: início no offset 100 da página A,
+            # fim no offset 3 da página B) e ainda ser corretos.
+            same_page = (
+                self.page_end is None
+                or self.physical_page is None
+                or self.page_end == self.physical_page
+            )
+            if same_page and self.char_end <= self.char_start:
+                raise ValueError("char_end deve ser > char_start")
         if (
-            self.char_start is not None
-            and self.char_end is not None
-            and self.char_end <= self.char_start
+            self.physical_page is not None
+            and self.page_end is not None
+            and self.page_end < self.physical_page
         ):
-            raise ValueError("char_end deve ser > char_start")
+            raise ValueError("page_end deve ser >= physical_page")
         return self
 
 
@@ -218,8 +242,12 @@ def _evidence_ref(candidate: ContextCandidate) -> EvidenceRef:
         score=candidate.score,
         rank=candidate.rank,
         section_path=passage.section_path,
+        page_start_id=passage.page_start_id,
+        page_end_id=passage.page_end_id,
         physical_page=passage.physical_page,
+        page_end=passage.page_end,
         printed_label=passage.printed_label,
+        printed_end_label=passage.printed_end_label,
         char_start=passage.char_start,
         char_end=passage.char_end,
     )
@@ -250,32 +278,41 @@ def select_evidences(
     - o orçamento de contexto é respeitado DURANTE a seleção: uma evidência
       que não couber no orçamento restante é descartada — nunca se estoura;
     - diversidade adaptativa (SPEC §8.6): SÓ quando `needs_diversity`, cada
-      edição contribui ao máximo `per_edition_limit` evidências — limite
-      flexível: não é preenchido com obras menos relevantes e a seleção
-      pode ficar abaixo de `max_evidences` (NOTES.md §10.13 item 4).
+      edição contribui ao máximo `per_edition_limit` evidências e os
+      candidatos que traem um CONCEITO ainda não seleccionado são preferidos
+      sobre os que repetem conceitos já cobertos (T12-02). O limite é
+      flexível nos dois eixos: não é preenchido com obras menos relevantes e
+      a seleção pode ficar abaixo de `max_evidences` (NOTES.md §10.13 item 4);
+      NUNCA se impõe uma quota cega por conceito — se um conceito tiver
+      poucos candidatos, as posições sobrentes ficam não preenchidas.
 
     Função pura sobre candidatos ranqueados; não toca provedores nem o banco.
     """
     selected: list[ContextEvidence] = []
     per_edition: dict[UUID, int] = {}
-    seen: set[UUID] = set()
+    seen_passages: set[UUID] = set()
+    seen_concepts: set[str] = set()
     remaining = budget.max_context_chars
-    for candidate in candidates:
+
+    def _append(candidate: ContextCandidate) -> bool:
+        """Tenta adicionar `candidate`; devolve False se não couber nos
+        limites atuais (orçamento, edição, máximo) ou se for duplicado."""
+        nonlocal remaining
         if len(selected) >= budget.max_evidences:
-            break
-        if candidate.passage.passage_id in seen:
-            continue
+            return False
+        if candidate.passage.passage_id in seen_passages:
+            return False
         parent = _parent_expansion(candidate, budget.parent_expansion_chars)
         cost = len(candidate.passage.text) + (len(parent) if parent else 0)
         if cost > remaining:
-            continue
+            return False
         if (
             needs_diversity
             and budget.per_edition_limit is not None
             and per_edition.get(candidate.passage.edition_id, 0) >= budget.per_edition_limit
         ):
-            continue
-        seen.add(candidate.passage.passage_id)
+            return False
+        seen_passages.add(candidate.passage.passage_id)
         selected.append(
             ContextEvidence(
                 evidence=_evidence_ref(candidate),
@@ -286,7 +323,30 @@ def select_evidences(
         per_edition[candidate.passage.edition_id] = (
             per_edition.get(candidate.passage.edition_id, 0) + 1
         )
+        seen_concepts.update(candidate.passage.concepts)
         remaining -= cost
+        return True
+
+    if not needs_diversity:
+        for candidate in candidates:
+            if len(selected) >= budget.max_evidences:
+                break
+            _append(candidate)
+    else:
+        # Diversificação por conceito (SPEC §8.6, T12-02): SÓ com diversidade,
+        # os candidatos que traem um conceito novo são preferidos; os que
+        # repetem conceitos já cobertos ficam para uma segunda passada, na
+        # ordem do ranking — nunca se descarta o que não couber por limite
+        # flexível, apenas se adia (passada 2 volta a tentar).
+        deferred: list[ContextCandidate] = []
+        for candidate in candidates:
+            if candidate.passage.concepts and not (set(candidate.passage.concepts) - seen_concepts):
+                deferred.append(candidate)
+                continue
+            if not _append(candidate):
+                deferred.append(candidate)
+        for candidate in deferred:
+            _append(candidate)
     return tuple(selected)
 
 

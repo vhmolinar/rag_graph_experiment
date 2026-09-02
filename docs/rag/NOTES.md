@@ -789,13 +789,15 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
    (modelo ou prompt distintos) cria NOVOS registros — histórico nunca é
    sobrescrito (test: "reexecução com nova versão não sobrescreve histórico").
    Não há `--force` em T11: apagar registros antigos violaría a garantia.
-5. **Idempotência por (edição, versão).** Se a edição já tem resumos da
-   versão desta execução, a execução é no-op (mesmo espírito de `rag index`
-   sem `--force`). A identidade de uma execução é a versão de síntese; toda
-   a execução corre numa única transação, então "tem sínteses desta versão"
-   implica a execução concluíu — incluindo conceitos (que podem
-   legitimamente ser zero em conteúdo). Falha rollbacka tudo, nunca publica
-   estado parcial.
+5. **Idempotência por (edição, versão), registrada como execução concluída —
+   não pela existência de itens.** A identidade de uma execução é a versão de
+   síntese (`summarizer_version_id`), registrada em `enrichment_runs` na MESMA
+   transação dos itens publicados (correção T11-03). O registro existe MESMO
+   quando nenhum item é publicado (todos os suportes rejeitados — suporte
+   vazio é comportamento legítimo do provedor, item 2): "tem execução desta
+   versão" implica a execução concluíu, e reexecutar a mesma versão é no-op
+   reprodutível. Conceitos podem legitimamente ser zero em conteúdo. Falha
+   rollbacka tudo (itens e execução), nunca publica estado parcial.
 6. **Escopos de suporte validados fechados no serviço.** Resumo de seção:
    suportes ⊆ passagens-filho diretas da seção. Resumo de capítulo (Section
    de topo, level=0): suportes ⊆ passagens-filho das seções DESCENDENTES do
@@ -832,139 +834,170 @@ conceitos), não bloqueantes; podem ser revistas pelo usuário.
     `ModelAuthSettings`/`ResilienceSettings` (T07); configuração `ENRICHMENT_*`.
     Retries só cobrem falhas transitórias; 4xx/payload inválido falham
     fechados (mesma regra de T07, NOTES.md §10.8 item 1).
-12. **Sem comando CLI em T11** (não consta nos entregáveis; os comandos de
-    fase 1 continuam sendo ingest/ocr/index/inspect). O enriquecimento é
-    invocado via `EnrichmentService`; integração no CLI/API fica para T14+
-    se a operação o exigir.
+12. **Comando `rag enrich <edition-id>`** (correção T11-01). O enriquecimento
+    é acionável e configurado pela operação (`EnrichmentService` +
+    `OpenAiCompatibleEnrichmentProvider`, env `ENRICHMENT_*`), não só uma API
+    interna: `rag ingest` → `rag index` → `rag enrich` produz as sínteses e
+    conceitos em operação (SPEC §7.4 "Após a indexação das passagens"). A
+    rota operacional é testada ponta a ponta, inclusive falha fechada sem
+    publicação parcial. A integração no API fica para T14 se a operação o
+    exigir.
 
-### 10.13 Registro do implementador — 2026-08-30 (fase 1, T12)
+## 11. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T10)
 
-Interpretações declaradas antes de implementar T12 (montagem de contexto e modo
-quote), não bloqueantes; podem ser revistas pelo usuário.
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T10.md`
+(T10-01 a T10-04). Elas complementam o registro §10.11.
 
-1. **Nova tabela de versão `context_policy_versions` (migration 0003).** A
-   política de montagem de contexto (número de evidências, orçamento de
-   contexto, expansão parental, limite flexível por edição) afeta a resposta
-   (SPEC §2: "toda configuração que afeta uma resposta deve ser versionada";
-   AC-15). O schema aprovado (T03) lista seis tipos de versão, mas §6 define
-   um MÍNIMO ("devem existir registros para..."), não um teto: adicionar um
-   registro de versão novo é aditivo (nova tabela, trigger de imutabilidade
-   mesmo padrão), não altera tabelas existentes nem critérios. A tabela é
-   gemelha da `retrieval_policy_versions` (T09) e registrada na allowlist do
-   `VersionsRepository`; `PackedContext.policy_version_id` expõe o registro
-   para `AnswerRun`/T13.
-2. **`ContextPolicy`/`ContextBudget` no domínio, mesma convenção de
-   `RetrievalPolicy` (T09).** Orçamento por profundidade com valores iniciais
-   conservadores e monotonos (brief < standard < deep); calibração no
-   benchmark de T19 (NOTES.md §4). Parâmetros: `max_evidences` (número de
-   evidências citáveis, SPEC §9.1), `max_context_chars` (orçamento total de
-   contexto = evidências + expansão parental), `parent_expansion_chars`
-   (máximo de texto parental por evidência, contexto NUNCA citável) e
-   `per_edition_limit` (limite flexível por edição; `None` = sem limite).
-3. **Seleção de evidências é função pura do domínio (`select_evidences`), não
-   chamada ao provedor de geração/reranking.** Ordem preservada do ranking
-   reranked (T09); deduplicação por `passage_id`; o orçamento de contexto é
-   respeitado durante a seleção (uma evidência que não couber no orçamento
-   restante é descartada, nunca estoura) e `PackedContext` impõe
-   estruturalmente `total_chars <= context_budget_chars` (falha fechada se
-   violado — nunca se devolve contexto acima do orçamento). A expansão
-   parental é limitada por evidência (`parent_expansion_chars`), truncada
-   como contexto adicional; nunca é texto citável.
-4. **Diversidade adaptativa executada na seleção: limite flexível por edição,
-   nunca quota cega.** `select_evidences` aplica a capa por edição
-   (`per_edition_limit`) SÓ quando `needs_diversity` (comparativa/conceitual
-   ampla, SPEC §8.6). "Flexível" = a capa não é uma meta a preencher: se uma
-   edição tem MENOS candidatos que o limite, as posições sobrentes NÃO são
-   preenchidas com outra obra menos relevante; se todas as edições atingirão
-   a capa e o orçamento ainda couber, a seleção PARA (pode ficar abaixo de
-   `max_evidences`) — nunca se inclui uma obra menos relevante para atingir
-   uma quantidade fixa. Factual/navegacional maximizam relevância sem capa
-   por edição.
-5. **Modo quote = `QuoteResponse` (domínio T02) construido a partir da
-   montagem de contexto; o serviço NÃO tem provedor de geração.** `ContextService.quote`
-   delega para `ContextService.assemble` (que nunca chama o provedor de
-   geração) e projeta os `EvidenceRef` seleccionados. Ausência de geração é
-   estrutural (nenhum `GeneratorProvider` na assinatura) E testada
-   ("nenhuma chamada ao generator em quote", T12). O `QuoteResponse` não
-   adiciona campos (o teste `test_has_no_prose_fields` de T02 fixa o
-   contrato `{"evidences"}`).
-6. **Metadados citáveis resolvidos numa única query por passagem
-   (`PassagesRepository.get_citable`).** Joins `passages` → `sections`
-   (path), `pages` (página física/rótulo impresso da `page_start_id`),
-   `editions` → `works` (`work_id`) e a passagem-pai (`parent_passage_id`/
-   `parent_text` via self-join). EPUB sem páginas: `physical_page`/
-   `printed_label`/offsets ficam nulos (NOTES.md §10.6 item 3). O trecho
-   recomposto a partir de páginas e offsets deve reproduzir `text` da
-   evidência (AC-03; testado via `PagesRepository.list_by_edition`).
-7. **`ContextService` expõe `assemble(...) -> PackedContext` e
-   `quote(...) -> QuoteResponse`; o provedor de geração fica FORA do serviço.**
-    `PackedContext.evidences` (com `parent_text`) é a entrada natural de T13
-    (`GenerationRequest.evidences` = `EvidenceRef` de cada evidência; o texto
-    parental, não citável, pode entrar como contexto adicional). Sem
-    migration nova além de `context_policy_versions`; sem alteração em
-    `runs.py`/`AnswerRun` nesta tarefa (a integração completa de versões na
-    `AnswerRun` é T13/T18).
+1. **Filtro efetivo obrigatório no plano.** `QueryPlan` ganhou
+   `effective_filters: EditionFilter`; `PlannerService.plan()` calcula
+   `merge_filters(request.explicit_filter(), inferred)`, mantendo
+   `inferred_filters` para os chips. A recuperação deve consumir somente o
+   filtro efetivo.
+2. **`expanded` exige provedor de planejamento.** Sem provedor, a estratégia
+   `expanded`, automática ou explícita, falha fechada com
+   `ModelUnavailableError`; o plano não declara expansão que não possa executar.
+3. **Sinais posicionais `no`/`na`/`em`.** Essas preposições são sinais de
+   inclusão apenas quando imediatamente antes da menção à obra; menções
+   ambíguas continuam sem filtro inferido.
+4. **Segurança do endpoint de planejamento.** `PlannerEndpointSettings` herda
+   `HttpEndpointSettings`: Bearer sobre `http://` é recusado; sem credencial,
+   `http://` continua permitido.
+5. **AC-07 permanece parcial.** A cobertura de T10 vale para planejamento e
+   recuperação; o critério global exige a prova ponta a ponta de T13.
 
-### 10.14 Registro do implementador — 2026-08-30 (fase 1, T13)
+## 12. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T11)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T11.md`
+(T11-01 a T11-03). Elas complementam o registro §10.12.
+
+1. **Enriquecimento integrado à operação via `rag enrich` (T11-01).** O
+   desvio anterior ("integração fica para T14+") é revocado: a rota
+   operacional `rag enrich <edition-id>` (SPEC §7.4 "Após a indexação das
+   passagens") é acionável/configurada via `EnrichmentService` +
+   `OpenAiCompatibleEnrichmentProvider` (env `ENRICHMENT_*`) e testada ponta
+   a ponta no CLI, inclusive falha fechada sem publicação parcial.
+2. **Enriquecimento opera sobre a execução ativa de indexação (T11-02).**
+   `EnrichmentService.enrich()` resolve a `IndexRun` ativa da edição e usa
+   `PassagesRepository.list_by_index_run()` — nunca `list_by_edition()` (que
+   inclui histórico). Sínteses e conceitos representam o conjunto indexado
+   corrente; passagens de execuções inativas nunca chegam ao provedor nem
+   viram suporte. Integração com duas reindexações prova essa garantia.
+3. **Idempotência por execução de enriquecimento, não por existência de
+   itens (T11-03).** Nova migration `0005` cria `enrichment_runs`; a execução
+   concluída (inclusive sem itens publicados) é registrada na MESMA transação
+   dos itens. Reexecutar a mesma identidade é no-op reprodutível; a identidade
+   NOVA acumula histórico sem sobrescrever (AC-15).
+4. **`index_run_id` integra a identidade de `enrichment_runs` (R2-T11-01).** A
+   chave de idempotência de uma execução de enriquecimento é
+   `(edition_id, index_run_id, summarizer_version_id)`: `index_run_id` — o
+   conjunto de passagens efetivamente enviado ao provedor — NÃO pode ficar de
+   fora, ou reindexar a edição com o MESMO modelo de enriquecimento seria um
+   no-op e as sínteses continuariam sustentadas por chunks inativos (viola
+   T11-02, SPEC §7.4/§8.7, AC-15). Reindexar minta uma nova execução de
+   enriquecimento sobre o conjunto corrente; execuções anteriores ficam
+   preservadas como histórico. Migration `0005` inclui a coluna `index_run_id`
+    (FK composta `(index_run_id, edition_id) → index_runs(id, edition_id)`) e a
+    unicidade por `(edition_id, index_run_id, summarizer_version_id)`.
+
+## 13. Registro do implementador — 2026-08-30 (fase 1, T12)
+
+1. **Política de contexto versionada.** `ContextPolicy`/`ContextBudget`
+   definem orçamento por profundidade, expansão parental e limite flexível por
+   edição. A política é registrada como `ContextPolicyVersion` imutável.
+2. **Seleção pura de evidências.** `select_evidences` preserva ranking,
+   deduplica por passagem, respeita orçamento e aplica limite flexível por
+   edição somente quando o plano requer diversidade. Expansão parental é
+   contexto adicional, nunca evidência citável.
+3. **Modo `quote` sem geração.** `ContextService.quote` projeta somente
+   `EvidenceRef` do contexto montado e não recebe provider de geração.
+
+## 14. Registro do implementador — 2026-09-01 (fase 1, correções de revisão T12)
+
+Correções aplicadas ao corrigir `docs/rag/review_rounds/REVIEW_T12.md`
+(T12-01 a T12-03). Elas complementam o registro §13.
+
+1. **Citações multipágina transportan início e fim da localização (T12-01,
+   AC-03).** `CitablePassage`/`EvidenceRef` passaram a expor `page_start_id`/
+   `page_end_id`, `physical_page`/`page_end` (índices físicos) e
+   `printed_label`/`printed_end_label` (rótulos impressos) de AMBAS as
+   páginas, com `char_start` relativo à página de início e `char_end`
+   relativo à página de fim — mesmo contrato do chunker (NOTES.md §10.6 item
+   3). `PassagesRepository.get_citable` inclui o JOIN da página de fim
+   (`pend`) e a projeção dos novos campos. Integração nova
+   (`test_quote_multipage_passage_reproduces_text`) prova que a abertura da
+   origem reproduz o trecho exato e que os offsets destacam dentro de cada
+   página.
+2. **Diversificação por conceito (T12-02, SPEC §8.6).** A associação
+   rastreável passagem→conceito já existe no banco (`concept_evidence` +
+   `concepts`, T11); `get_citable` a carrega (`CitablePassage.concepts`) e
+   `select_evidences` a aplica quando `needs_diversity`: candidatos que
+   traem um conceito ainda não seleccionado são preferidos sobre os que
+   repetem conceitos já cobertos, numa segunda passada na ordem do ranking.
+   NUNCA se impõe quota cega por conceito (um conceito com poucos candidatos
+   não se preenche). Testes: unitários em `test_context.py` (a diversificação
+   altera a seleção) e integração
+   `test_concept_diversity_changes_selection_in_pipeline` (conceito
+   "liberdade" em a0/a1, "destino" em b0 → a ordem passa de [a1,a0,b0] para
+   [a1,b0,a0]).
+3. **Teste de "generator não chamado" reformulado como verificação
+   estrutural (T12-03).** `test_quote_never_calls_generator` instanciava
+   `FakeGeneratorProvider` sem o injetar — a asserção não observava o sistema
+   sob teste. `test_quote_has_no_generation_path` agora verifica
+   estruturalmente que nem `ContextService.quote` nem `assemble` aceitam
+   provedor de geração, e que a resposta contém só trechos literais do
+   acervo. Quando a orquestração de consultas existir (T13), injetar um
+   generator que falhe ao ser chamado e exercitar o fluxo `quote` completo.
+4. **Bug preexistente do seed de integração corrigido.** O seed de
+   `test_context_pipeline.py` criava uma `EmbeddingVersion` distinta da do
+   provedor de recuperação (`ConceptEmbeddingProvider.embedding_version`); o
+   estágio vetorial filtra por `embedding_version_id`, resultando em zero
+   candidatos vetoriais e as asserções de ordem falhando. O seed passou a
+   usar `provider.embedding_version` (mesmo padrão de
+   `test_retrieval_pipeline.py`).
+5. **Validator de offsets corregido para passagens multipágina (T12-R2-01,
+   AC-03).** A comparação `char_end > char_start` só é válida quando ambos os
+   offsets referem à MESMA página; para uma passagem multipágina, `char_start`
+   é relativo à página de início e `char_end` à página de fim (NOTES.md
+   §10.6 item 3) e podem ser invertidos entre páginas (ex.: início no offset
+   100 da página A, fim no offset 3 da página B). `EvidenceRef`,
+   `CitablePassage` e `Passage` (domínio) passaram a aplicar a comparação
+   somente quando não há páginas distintas; a constraint CHECK
+   `passages_check1` do banco recebe a mesma condição via migration nova
+   `0007` (`char_end > char_start` só quando `page_start_id = page_end_id`
+   ou sem páginas). Testes positivos e negativos adicionados nos três
+   modelos e a integração multipágina passou a usar offsets invertidos
+   (`char_start=30` na página 0, `char_end=13` na página 1).
+
+## 15. Registro do implementador — 2026-08-30 (fase 1, T13)
 
 Interpretações declaradas antes de implementar T13 (geração dissertativa e
 verificação), não bloqueantes; podem ser revistas pelo usuário.
 
-1. **`VerifierProvider` é contrato novo** (`domain/providers.py`), não reuso
-   de `GeneratorProvider`. A verificação julga cada par (afirmação,
-   evidência) — semântica distinta da geração. `VerificationRequest`/
-   `ClaimVerdict`/`VerificationVerdict` definem o contrato; o adapter
-   `OpenAiCompatibleVerifierProvider` usa o endpoint compatível com OpenAI
-   (`/chat/completions`, JSON mode) e a mesma resiliência de T07.
-2. **Existência de IDs é determinística no serviço (função pura do domínio),
-   NUNCA do provedor.** `invalid_evidence_ids` compara os IDs citados pelas
-   afirmações contra o conjunto de evidências montado (T12). Uma citação
-   inexistente é CITAÇÃO FABRICADA (SPEC §9.4 "rejeita IDs inexistentes";
-   checklist §20 bloqueador): após o limite de regenerações,
-   `VerificationError` — a resposta nunca é liberada com ID inexistente.
-3. **Suporte/contradição são semânticas do provedor; a agregação é função
-   pura do domínio (`assess_claims`).** Uma afirmação é sustentada SÓ quando
-   TODAS as suas evidências citadas receberam veredicto `supported` sem
-   contradição; um par ausente do veredicto é tratado como não sustentado
-   (conservador, falha fechada — o provedor não pode omitir silenciosamente
-   um juízo). Veredictos para pares não informados (afirmação ou evidência
-   inexistentes) são ignorados defensivamente.
-4. **Correção final após o limite: afirmações não sustentadas/contraditorias
-   são MARCadas como inferências (`mark_unsupported_as_inference`).** SPEC
-   §9.4: "remove, corrige ou marca inferências sem suporte direto". O serviço
-   usa a opção "marca" — AC-09 exige "marcação explícita de inferência"; é
-   transformação determinística do `Claim` (`inference=True`), nunca introduz
-   conteúdo novo. Se a cobertura ficar abaixo do limiar da política, há
-   ABSTENÇÃO forzada (`FORCED_ABSTENTION`) — a resposta abstida não carrega
-   afirmações (AC-10).
-5. **`VerificationPolicy`/`VerificationBudget` versionados via nova tabela
-   `verification_policy_versions` (migration 0004).** Mesmo padrão de T12
-   (NOTES.md §10.13 item 1): a política de verificação (iterações e limiar de
-   cobertura) afeta a resposta e deve ser versionada (SPEC §2, AC-15).
-   Valores iniciais conservadores e monotonos (brief < standard < deep);
-   calibração no benchmark de T19 (NOTES.md §4).
-6. **Timeout/falha do provedor de verificação falha fechado: nenhuna resposta
-   não verificada é liberada.** O serviço envolve a chamada ao provedor e
-   devolve `VerificationError` (cause preservado). Falha de GERAÇÃO, pela
-   contrário, propagha como `ModelError` tipado (AC-14) — o serviço não a
-   mascara.
-7. **AC-11: limitação de fonte única é garantia determinística do serviço.**
-   Se a intenção for comparativa e as evidências montadas virem de UMA única
-   obra, o serviço anexa uma limitação em `GeneratedAnswer.limitations` (se
-   ainda não estiver presente). Não depende de o gerador lembrar-se — AC-11 é
-   garantido por construção, não por prompt.
-8. **Abstenção do gerador é aceita sem verificação (nenhumas afirmações a
-   verificar); a verificação forzada é caminho separado.** Se
-   `GeneratedAnswer.abstained`, o serviço devolve a resposta abstida com
-   `VerificationResult` vazio (`total_claims=0`, `coverage=1.0` vacua, action
-   ACCEPTED) e sem chamar o provedor de verificação. A forzada (cobertura <
-   limiar após o limite) é caminho distinto (item 4). Ambas produzem abstenção
-   (AC-10).
-9. **Versões registradas pelo serviço (`PromptVersion` + `ModelEndpointVersion`
-   + `VerificationPolicyVersion`).** Prompt de geração e de verificação são
-   templates hasheados (mesma convenção de T11); `ModelEndpointVersion` por
-   papel (`generator`/`verifier`, kind `generator`). As instruções de
-   profundidade continuam vivendo no adapter (conteúdo de prompt do adapter,
-   mesmo critério de T11 para o template). `DissertativeAnswer` devolve os
-   IDs das versões registradas; a integração completa em `AnswerRun` fica para
-   T18 (NOTES.md §10.13 item 7).
+1. **`VerifierProvider` é contrato novo** (`domain/providers.py`), distinto de
+   `GeneratorProvider`; julga cada par afirmação/evidência via
+   `VerificationRequest`, `ClaimVerdict` e `VerificationVerdict`.
+2. **IDs de evidência são verificados deterministicamente no serviço.**
+   `invalid_evidence_ids` compara IDs citados com as evidências montadas. Uma
+   citação inexistente nunca é liberada; após o limite de regenerações, há
+   `VerificationError`.
+3. **Suporte e contradição pertencem ao provedor; a agregação é pura.**
+   `assess_claims` exige veredicto sustentado para cada par citado e trata par
+   ausente como não sustentado, falhando fechado.
+4. **Correção final usa marcação de inferência.** Após o limite, claims não
+   sustentadas são marcadas por `mark_unsupported_as_inference`; cobertura
+   abaixo do limiar força abstenção sem claims.
+5. **Política de verificação é versionada.** `VerificationPolicy`/
+   `VerificationBudget` são persistidos em `verification_policy_versions` pela
+   migration `0008`, reencadeada após as migrations T12 para preservar uma
+   única sequência Alembic.
+6. **Falha ou timeout do verificador falha fechado.** O serviço retorna
+   `VerificationError`; falha do gerador preserva o `ModelError` tipado.
+7. **Comparativas de fonte única recebem limitação determinística.** Quando a
+   intenção é comparativa e o contexto possui uma obra, o serviço acrescenta a
+   limitação sem depender do gerador.
+8. **A abstenção do gerador é um caminho separado.** Sem claims para julgar,
+   retorna `VerificationResult` vazio; abstenção por cobertura insuficiente é
+   forçada pelo serviço.
+9. **Versões registradas:** prompts de geração/verificação, endpoints de
+   generator/verifier e política de verificação. `DissertativeAnswer` expõe os
+   IDs; a integração completa em `AnswerRun` pertence a T18.

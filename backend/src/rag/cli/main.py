@@ -35,14 +35,19 @@ from rag.adapters.embedding_adapter import (
     EmbeddingEndpointSettings,
     OpenAiCompatibleEmbeddingProvider,
 )
+from rag.adapters.enrichment_adapter import (
+    EnrichmentEndpointSettings,
+    OpenAiCompatibleEnrichmentProvider,
+)
 from rag.adapters.ocr_adapter import DoclingOcrEngine, OcrEngine, ocr_pdf
+from rag.application.enrichment import EnrichmentService
 from rag.application.index import IndexingService
 from rag.application.ingest import IngestionService, load_metadata
 from rag.domain.chunking import ChunkingParams
 from rag.domain.errors import RagError
-from rag.domain.providers import EmbeddingProvider
+from rag.domain.providers import EmbeddingProvider, EnrichmentProvider
 from rag.infrastructure.artifacts import ArtifactStore
-from rag.infrastructure.config import DatabaseSettings, StorageSettings
+from rag.infrastructure.config import ChunkingSettings, DatabaseSettings, StorageSettings
 from rag.infrastructure.db import Database
 from rag.infrastructure.repositories.content import PagesRepository, SectionsRepository
 from rag.infrastructure.repositories.editions import EditionsRepository
@@ -200,13 +205,30 @@ def _default_embedding_provider() -> EmbeddingProvider:
     return OpenAiCompatibleEmbeddingProvider(EmbeddingEndpointSettings())
 
 
+def _default_enrichment_provider() -> EnrichmentProvider:
+    return OpenAiCompatibleEnrichmentProvider(EnrichmentEndpointSettings())
+
+
+def _resolve_chunking_params(overrides: dict[str, int | None]) -> ChunkingParams:
+    """Env (`CHUNKING_*`) primeiro; opções explícitas de CLI sobrepõem (T6-07)."""
+    base = ChunkingSettings().model_dump()
+    for key, value in overrides.items():
+        if value is not None:
+            base[key] = value
+    return ChunkingParams(**base)
+
+
 async def _index_async(
-    edition_id: UUID, force: bool, embedding_provider_factory: Callable[[], EmbeddingProvider]
-) -> int:
+    edition_id: UUID,
+    force: bool,
+    embedding_provider_factory: Callable[[], EmbeddingProvider],
+    chunking_overrides: dict[str, int | None],
+) -> tuple[int, ChunkingParams]:
     storage = StorageSettings()
     store = ArtifactStore(storage.root, max_size_bytes=storage.max_size_bytes)
     embedding_provider = embedding_provider_factory()
     embedding_settings = EmbeddingEndpointSettings()
+    chunking_params = _resolve_chunking_params(chunking_overrides)
     service = IndexingService(store, DoclingExtractor(), embedding_provider)
     db = Database(DatabaseSettings())
     await db.open()
@@ -215,10 +237,13 @@ async def _index_async(
             report = await service.index_edition(
                 conn,
                 edition_id=edition_id,
-                chunking_params=ChunkingParams(),
+                chunking_params=chunking_params,
                 embedding_model_name=embedding_settings.model,
                 embedding_dimensions=EMBEDDING_COLUMN_DIMENSIONS,
                 force=force,
+                batch_size=embedding_settings.batch_size,
+                embedding_endpoint=embedding_settings.base_url,
+                embedding_model_revision=embedding_settings.model_revision,
             )
     finally:
         aclose = getattr(embedding_provider, "aclose", None)
@@ -227,20 +252,55 @@ async def _index_async(
         await db.close()
     mode = "criada" if report.created else "existente"
     typer.echo(
-        f"indexação[{mode}] edição={report.edition_id} pais={report.parents} "
-        f"filhos={report.children} chunking_version={report.chunking_version_id} "
+        f"indexação[{mode}] edição={report.edition_id} execução={report.index_run_id} "
+        f"pais={report.parents} filhos={report.children} "
+        f"chunking_version={report.chunking_version_id} "
         f"embedding_version={report.embedding_version_id or '-'}"
     )
+    return 0, chunking_params
+
+
+async def _enrich_async(
+    edition_id: UUID,
+    enrichment_provider_factory: Callable[[], EnrichmentProvider],
+) -> int:
+    """Enriquecimento hierárquico (SPEC §7.4, T11): sínteses de
+    seção/capítulo/edição e conceitos sobre a execução ativa de indexação."""
+    provider = enrichment_provider_factory()
+    service = EnrichmentService(provider)
+    settings = EnrichmentEndpointSettings()
+    db = Database(DatabaseSettings())
+    await db.open()
+    try:
+        async with db.connection() as conn:
+            report = await service.enrich(conn, edition_id=edition_id, model_name=settings.model)
+    finally:
+        aclose = getattr(provider, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        await db.close()
+    mode = "criada" if report.created else "existente"
+    typer.echo(
+        f"enriquecimento[{mode}] edição={report.edition_id} "
+        f"seção={report.summaries_section} capítulo={report.summaries_chapter} "
+        f"edição={report.summaries_edition} conceitos={report.concepts} "
+        f"aliases={report.concept_aliases} evidências={report.concept_evidences} "
+        f"summarizer_version={report.summarizer_version_id} "
+        f"extractor_version={report.extractor_version_id}"
+    )
+    for warning in report.warnings:
+        typer.echo(f"aviso: {warning}")
     return 0
 
 
 def create_app(
     engine_factory: Callable[[str], OcrEngine] = DoclingOcrEngine,
     embedding_provider_factory: Callable[[], EmbeddingProvider] = _default_embedding_provider,
+    enrichment_provider_factory: Callable[[], EnrichmentProvider] = _default_enrichment_provider,
 ) -> typer.Typer:
     app = typer.Typer(
         name="rag",
-        help="RAG de livros — ingestão, OCR e inspeção (fase 1, local).",
+        help="RAG de livros — ingestão, OCR, inspeção e enriquecimento (fase 1, local).",
         no_args_is_help=True,
     )
 
@@ -297,8 +357,32 @@ def create_app(
     def index(
         edition_id: Annotated[str, typer.Argument(help="UUID da edição")],
         force: Annotated[
-            bool, typer.Option("--force", help="reindexa mesmo se já houver passagens")
+            bool,
+            typer.Option(
+                "--force", help="minta uma nova execução mesmo com a mesma identidade de versões"
+            ),
         ] = False,
+        parent_tokens: Annotated[
+            int | None,
+            typer.Option(
+                "--parent-tokens",
+                help="tokens-alvo por janela pai (padrão: CHUNKING_PARENT_TARGET_TOKENS)",
+            ),
+        ] = None,
+        child_tokens: Annotated[
+            int | None,
+            typer.Option(
+                "--child-tokens",
+                help="tokens-alvo por janela filha (padrão: CHUNKING_CHILD_TARGET_TOKENS)",
+            ),
+        ] = None,
+        child_overlap: Annotated[
+            int | None,
+            typer.Option(
+                "--child-overlap",
+                help="sobreposição entre janelas filhas (padrão: CHUNKING_CHILD_OVERLAP_TOKENS)",
+            ),
+        ] = None,
     ) -> None:
         """Chunking estrutural + embeddings em lote para uma edição já ingerida."""
         try:
@@ -306,10 +390,17 @@ def create_app(
         except ValueError:
             typer.secho("erro: edition-id deve ser um UUID.", err=True, fg=typer.colors.RED)
             raise typer.Exit(code=1) from None
+        chunking_overrides: dict[str, int | None] = {
+            "parent_target_tokens": parent_tokens,
+            "child_target_tokens": child_tokens,
+            "child_overlap_tokens": child_overlap,
+        }
         log = structlog.get_logger()
         log.info("index.started", edition_id=str(parsed), force=force)
         try:
-            code = asyncio.run(_index_async(parsed, force, embedding_provider_factory))
+            code, resolved_params = asyncio.run(
+                _index_async(parsed, force, embedding_provider_factory, chunking_overrides)
+            )
         except RagError as exc:
             log.info("index.failed", edition_id=str(parsed), error=exc.message)
             _echo_error(exc)
@@ -318,8 +409,69 @@ def create_app(
             log.exception("index.unexpected_error", edition_id=str(parsed))
             typer.secho(f"erro inesperado: {type(exc).__name__}", err=True)
             raise typer.Exit(code=2) from exc
-        log.info("index.finished", edition_id=str(parsed), force=force)
+        log.info(
+            "index.finished",
+            edition_id=str(parsed),
+            force=force,
+            **resolved_params.model_dump(),
+        )
         raise typer.Exit(code=code)
+
+    @app.command()
+    def enrich(
+        edition_id: Annotated[str, typer.Argument(help="UUID da edição")],
+    ) -> None:
+        """Sínteses hierárquicos e conceitos sobre a execução ativa de indexação."""
+        try:
+            parsed = UUID(edition_id)
+        except ValueError:
+            typer.secho("erro: edition-id deve ser um UUID.", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1) from None
+        log = structlog.get_logger()
+        log.info("enrich.started", edition_id=str(parsed))
+        try:
+            code = asyncio.run(_enrich_async(parsed, enrichment_provider_factory))
+        except RagError as exc:
+            log.info("enrich.failed", edition_id=str(parsed), error=exc.message)
+            _echo_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            log.exception("enrich.unexpected_error", edition_id=str(parsed))
+            typer.secho(f"erro inesperado: {type(exc).__name__}", err=True)
+            raise typer.Exit(code=2) from exc
+        log.info("enrich.finished", edition_id=str(parsed))
+        raise typer.Exit(code=code)
+
+    @app.command(name="backfill-fingerprint")
+    def backfill_fingerprint(
+        edition_id: Annotated[str, typer.Argument(help="UUID da edição")],
+    ) -> None:
+        """Reextrai e registra o fingerprint canônico de edição legada."""
+        try:
+            parsed = UUID(edition_id)
+        except ValueError:
+            typer.secho("erro: edition-id deve ser um UUID.", err=True)
+            raise typer.Exit(code=1) from None
+        storage = StorageSettings()
+        service = IngestionService(
+            ArtifactStore(storage.root, max_size_bytes=storage.max_size_bytes), DoclingExtractor()
+        )
+        db = Database(DatabaseSettings())
+
+        async def run() -> str:
+            await db.open()
+            try:
+                async with db.connection() as conn:
+                    return await service.backfill_fingerprint(conn, edition_id=parsed)
+            finally:
+                await db.close()
+
+        try:
+            fingerprint = asyncio.run(run())
+        except RagError as exc:
+            _echo_error(exc)
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"fingerprint atualizado: edição={parsed} sha256={fingerprint}")
 
     @app.command()
     def inspect(

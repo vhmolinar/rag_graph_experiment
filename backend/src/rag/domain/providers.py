@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag.domain.answer import Claim, EvidenceRef, GeneratedAnswer
 from rag.domain.enums import Depth, SummaryScope
 from rag.domain.query import MAX_SUBQUESTIONS
+from rag.domain.versions import EmbeddingVersion
 
 MAX_PLANNED_ALIASES = 50
 MAX_PLANNED_CONCEPTS = 50
@@ -70,6 +71,9 @@ class PlannedQuery(BaseModel):
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
+    @property
+    def embedding_version(self) -> EmbeddingVersion: ...
+
     async def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
     async def embed_query(self, text: str) -> list[float]: ...
 

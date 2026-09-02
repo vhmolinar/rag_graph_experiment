@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from rag.adapters.reranker_adapter import HttpRerankerProvider, RerankerEndpointSettings
 from rag.domain.errors import (
@@ -15,7 +16,7 @@ from rag.domain.errors import (
     RateLimitError,
 )
 
-_BASE_URL = "http://reranker.test"
+_BASE_URL = "https://reranker.test"
 
 
 async def _noop_sleep(_seconds: float) -> None:
@@ -26,10 +27,36 @@ def _settings(**overrides: object) -> RerankerEndpointSettings:
     defaults: dict[str, object] = {
         "base_url": _BASE_URL,
         "model": "qwen3-reranker",
-        "max_retries": 0,
     }
     defaults.update(overrides)
     return RerankerEndpointSettings(**defaults)  # type: ignore[arg-type]
+
+
+class TestRerankerEndpointSettings:
+    """T7-02/T7-05: URL válida, credencial só sobre https e limites de resiliência."""
+
+    def test_http_with_api_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="https"):
+            _settings(base_url="http://reranker.test", api_key="segredo-456")
+
+    def test_http_without_api_key_is_accepted(self) -> None:
+        assert _settings().api_key.get_secret_value() == ""
+
+    def test_https_with_api_key_is_accepted(self) -> None:
+        settings = _settings(api_key="segredo-456")
+        assert settings.api_key.get_secret_value() == "segredo-456"
+
+    def test_invalid_base_url_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(base_url="not-a-url")
+
+    def test_non_positive_timeout_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(timeout_seconds=0)
+
+    def test_zero_max_concurrency_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _settings(max_concurrency=0)
 
 
 class TestRerank:
@@ -179,5 +206,77 @@ class TestRerank:
         try:
             with pytest.raises(ModelResponseError):
                 await provider.rerank("q", ["d1", "d2"])
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_duplicate_index_for_single_document_raises_model_response_error(self) -> None:
+        # T7-03: para um documento, duas entradas de índice 0 não podem passar
+        # (antigamente o dict sobrescrevia silenciosamente — cardinalidade 2 != 1).
+        respx.post(f"{_BASE_URL}/rerank").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"index": 0, "relevance_score": 0.5},
+                        {"index": 0, "relevance_score": 0.9},
+                    ]
+                },
+            )
+        )
+        provider = HttpRerankerProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.rerank("q", ["d1"])
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_nan_score_raises_model_response_error(self) -> None:
+        # T7-03: `float()` aceita NaN — o schema precisa rejeitar scores não
+        # finitos antes de contaminar o ranking. json.loads reaceita NaN como
+        # extensão do JSON estrito, por isso o corpo bruto.
+        respx.post(f"{_BASE_URL}/rerank").mock(
+            return_value=httpx.Response(
+                200,
+                content=b'{"results": [{"index": 0, "relevance_score": NaN}]}',
+                headers={"Content-Type": "application/json"},
+            )
+        )
+        provider = HttpRerankerProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.rerank("q", ["d1"])
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_infinity_score_raises_model_response_error(self) -> None:
+        respx.post(f"{_BASE_URL}/rerank").mock(
+            return_value=httpx.Response(
+                200,
+                content=b'{"results": [{"index": 0, "relevance_score": Infinity}]}',
+                headers={"Content-Type": "application/json"},
+            )
+        )
+        provider = HttpRerankerProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.rerank("q", ["d1"])
+        finally:
+            await provider.aclose()
+
+    @respx.mock
+    async def test_invalid_score_type_raises_model_response_error(self) -> None:
+        # T7-03: tipo inválido (string que não é número) deve ser rejeitado.
+        respx.post(f"{_BASE_URL}/rerank").mock(
+            return_value=httpx.Response(
+                200, json={"results": [{"index": 0, "relevance_score": "alto"}]}
+            )
+        )
+        provider = HttpRerankerProvider(_settings(), sleep=_noop_sleep)
+        try:
+            with pytest.raises(ModelResponseError):
+                await provider.rerank("q", ["d1"])
         finally:
             await provider.aclose()

@@ -97,3 +97,27 @@ class ConceptEvidence(BaseModel):
     passage_id: UUID
     confidence: float = Field(ge=0.0, le=1.0)
     extractor_version_id: UUID
+
+
+class EnrichmentRun(BaseModel):
+    """Execução de enriquecimento concluída (T11, correção T11-03 e R2-T11-01).
+
+    A identidade de uma execução é (edição, execução de indexação, versão de
+    síntese): `index_run_id` referencia o conjunto de passagens efetivamente
+    enviado ao provedor (R2-T11-01), `summarizer_version_id` a versão do
+    modelo/prompt, e `extractor_version_id` a versão de extração da mesma
+    execução. O registro existe MESMO quando nenhum item é publicado (todos os
+    suportes rejeitados) — é ele, não a existência de sínteses, que torna
+    idempotente a reexecução da mesma identidade (NOTES.md §10.12 item 5).
+    Reindexar a edição (nova `IndexRun`) com o mesmo modelo NÃO é no-op: a
+    identidade mudou, exige nova execução sobre o conjunto corrente.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    edition_id: UUID
+    index_run_id: UUID
+    summarizer_version_id: UUID
+    extractor_version_id: UUID
+    id: UUID = Field(default_factory=uuid4)
+    created_at: AwareDatetime = Field(default_factory=utcnow)
