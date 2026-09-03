@@ -272,6 +272,9 @@ class TestOriginalText:
             assert node.original_text == "Frase unica no paragrafo."
 
     def test_split_aligned_block_has_exact_text_per_child(self) -> None:
+        """Para EPUB, mesmo quando o bloco está alinhado (text == original_text),
+        os filhos recebem o bloco inteiro como original_text para garantir
+        fidelidade literal (R01, AC-03)."""
         text = (
             "Primeira frase suficientemente longa. "
             "Segunda frase suficientemente longa. "
@@ -301,7 +304,11 @@ class TestOriginalText:
             if node.parent_index is not None
         ]
         assert len(children) == 3
-        assert all(node.original_text == node.text for node in children)
+        # Para EPUB, cada filho recebe o bloco inteiro como original_text
+        # (mesmo quando cobre apenas parte das sentenças) — fidelidade literal.
+        for child in children:
+            assert child.original_text == text
+            assert child.original_text != child.text or child.text == text
 
     def test_pdf_citable_text_recomposes_offsets_across_blocks(self) -> None:
         first = "Primeira frase completa."
