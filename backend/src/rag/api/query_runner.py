@@ -108,6 +108,7 @@ class QueryExecutor:
                 filters=filters,
                 policy=self._deps.retrieval_policy,
                 depth=request.depth,
+                strategy=plan.strategy,
                 run=run,
             )
             # `RetrievalService.retrieve` já persiste candidatos e versões no

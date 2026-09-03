@@ -49,7 +49,7 @@ class ContextService:
         policy: ContextPolicy,
     ) -> PackedContext:
         budget = policy.budget_for(depth)
-        candidates = await self._resolve_candidates(conn, retrieval.reranked)
+        candidates = await self._resolve_candidates(conn, retrieval.final_candidates())
         evidences = select_evidences(
             candidates, budget=budget, needs_diversity=plan.needs_diversity
         )
@@ -83,9 +83,12 @@ class ContextService:
 
     @staticmethod
     async def _resolve_candidates(
-        conn: AsyncConnection, reranked: tuple[RankedCandidate, ...]
+        conn: AsyncConnection, ranked: tuple[RankedCandidate, ...]
     ) -> list[ContextCandidate]:
-        """Resolve metadados citáveis de cada candidato reranked (AC-03).
+        """Resolve metadados citáveis de cada candidato final (AC-03).
+
+        O ranking final é `retrieval.final_candidates()`: reranked em
+        `hybrid`/`expanded`, lexical em `literal` (SPEC §8.3, B01).
 
         Falha fechada se uma passagem candidata deixou de existir entre a
         recuperação e a montagem — nunca se cita um documento não verificado
@@ -93,7 +96,7 @@ class ContextService:
         """
         passages = PassagesRepository(conn)
         candidates: list[ContextCandidate] = []
-        for candidate in reranked:
+        for candidate in ranked:
             citable = await passages.get_citable(candidate.passage_id)
             if citable is None:
                 raise NotFoundError(
