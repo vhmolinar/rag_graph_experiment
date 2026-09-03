@@ -255,21 +255,31 @@ def _slice_text(
 def _original_text_of(sentences: list[_Sentence]) -> str:
     """Concatena o original dos blocos que contribuíram para o chunk, na
     ordem, sem repetir o mesmo bloco quando várias de suas sentenças caem no
-    mesmo chunk (T6-05)."""
-    # Sem alinhamento confiável, o texto normalizado é a única fatia exata
-    # conhecida; nunca promovemos o bloco inteiro como citação de um filho.
+    mesmo chunk (T6-05).
+    
+    Para PDF (com páginas): quando um bloco está parcialmente coberto, usa o
+    texto normalizado — os offsets de página garantem precisão na citação.
+    
+    Para EPUB (sem páginas): sempre usa o `block_original_text` inteiro dos
+    blocos envolvidos, mesmo quando parcialmente cobertos. Isso garante
+    fidelidade literal ao original (AC-03), mesmo que redundante — para EPUB,
+    não há offsets de página para fatiar com precisão, e o texto normalizado
+    perderia formatação significativa (R01).
+    """
     by_block: dict[int, int] = {}
     totals: dict[int, int] = {}
     for sentence in sentences:
         by_block[sentence.block_ordinal] = by_block.get(sentence.block_ordinal, 0) + 1
         totals[sentence.block_ordinal] = sentence.block_sentence_count
-    if any(by_block[ordinal] != totals[ordinal] for ordinal in by_block):
+    
+    has_partial_block = any(by_block[ordinal] != totals[ordinal] for ordinal in by_block)
+    has_pages = any(sentence.page_index is not None for sentence in sentences)
+    
+    if has_pages and has_partial_block:
         return " ".join(sentence.text for sentence in sentences)
-    if any(not sentence.original_is_aligned for sentence in sentences) and (
-        any(by_block[ordinal] != totals[ordinal] for ordinal in by_block)
-        or any(sentence.page_index is not None for sentence in sentences)
-    ):
+    if any(not sentence.original_is_aligned for sentence in sentences) and has_pages:
         return " ".join(sentence.text for sentence in sentences)
+    
     parts: list[str] = []
     last_block: int | None = None
     for sentence in sentences:
