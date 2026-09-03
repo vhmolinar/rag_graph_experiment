@@ -82,6 +82,7 @@ _ALLOWED_CHANGE_FIELDS: frozenset[str] = frozenset(
         "candidates",
         "selected_evidence_ids",
         "response",
+        "limitations",
         "verification",
         "versions",
         "latencies",
@@ -112,6 +113,7 @@ class AnswerRun(BaseModel):
     candidates: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
     selected_evidence_ids: tuple[UUID, ...] = Field(default_factory=tuple)
     response: GeneratedAnswer | QuoteResponse | None = None
+    limitations: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     verification: VerificationResult | None = None
     versions: VersionSet = Field(default_factory=VersionSet)
     latencies: tuple[StageLatency, ...] = Field(default_factory=tuple)

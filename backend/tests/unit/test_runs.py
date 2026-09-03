@@ -97,6 +97,25 @@ class TestTransitions:
         with pytest.raises(ValidationError):
             run.status = QueryStatus.SUCCEEDED
 
+    def test_transition_with_limitations(self) -> None:
+        run = _run().transition(QueryStatus.RUNNING)
+        succeeded = run.transition(
+            QueryStatus.SUCCEEDED,
+            response=QuoteResponse(),
+            limitations=("limitação declarada",),
+        )
+        assert succeeded.limitations == ("limitação declarada",)
+
+    def test_default_limitations_is_empty_tuple(self) -> None:
+        run = _run()
+        assert run.limitations == ()
+        done = run.transition(QueryStatus.RUNNING).transition(
+            QueryStatus.SUCCEEDED, response=QuoteResponse()
+        )
+        assert done.status is QueryStatus.SUCCEEDED
+        assert done.id == run.id
+        assert done.limitations == ()
+
     def test_valid_path_queued_running_succeeded(self) -> None:
         run = _run().transition(QueryStatus.RUNNING)
         assert run.status is QueryStatus.RUNNING

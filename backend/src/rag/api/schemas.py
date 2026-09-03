@@ -53,6 +53,7 @@ class QueryState(BaseModel):
     strategy_explanation: StrategyExplanation | None = None
     inferred_filters: EditionFilter | None = None
     result: QuoteResponse | GeneratedAnswer | None = None
+    limitations: tuple[str, ...] = Field(default_factory=tuple)
     verification: VerificationResult | None = None
     error: ErrorOut | None = None
     created_at: datetime
@@ -154,6 +155,7 @@ def build_query_state(run: AnswerRun) -> QueryState:
         strategy_explanation=plan.strategy_explanation if plan is not None else None,
         inferred_filters=run.inferred_filters,
         result=run.response,
+        limitations=run.limitations,
         verification=run.verification,
         error=error,
         created_at=run.created_at,

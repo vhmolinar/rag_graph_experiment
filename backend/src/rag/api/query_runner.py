@@ -181,6 +181,7 @@ class QueryExecutor:
                 run.transition(
                     status,
                     response=diss.answer,
+                    limitations=diss.limitations,
                     verification=diss.verification,
                     selected_evidence_ids=tuple(
                         item.evidence.passage_id for item in packed.evidences

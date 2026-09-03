@@ -16,6 +16,7 @@ _JSONB_COLUMNS = (
     "candidates",
     "selected_evidence_ids",
     "response",
+    "limitations",
     "verification",
     "versions",
     "latencies",
@@ -45,14 +46,14 @@ class AnswerRunsRepository:
                                          question_anonymized, rewritten_query,
                                          explicit_filters, inferred_filters, plan,
                                          candidates, selected_evidence_ids, response,
-                                         verification, versions, latencies, error_code,
-                                         error_message, request_id, created_at)
+                                         limitations, verification, versions, latencies,
+                                         error_code, error_message, request_id, created_at)
                 VALUES (%(id)s, %(session_id)s, %(status)s, %(question_original)s,
                         %(question_anonymized)s, %(rewritten_query)s,
                         %(explicit_filters)s, %(inferred_filters)s, %(plan)s,
                         %(candidates)s, %(selected_evidence_ids)s, %(response)s,
-                        %(verification)s, %(versions)s, %(latencies)s, %(error_code)s,
-                        %(error_message)s, %(request_id)s, %(created_at)s)
+                        %(limitations)s, %(verification)s, %(versions)s, %(latencies)s,
+                        %(error_code)s, %(error_message)s, %(request_id)s, %(created_at)s)
                 """,
                 {
                     "id": run.id,
@@ -69,6 +70,7 @@ class AnswerRunsRepository:
                     "candidates": Jsonb(data["candidates"]),
                     "selected_evidence_ids": Jsonb(data["selected_evidence_ids"]),
                     "response": Jsonb(data["response"]) if data["response"] is not None else None,
+                    "limitations": Jsonb(data["limitations"]),
                     "verification": Jsonb(data["verification"])
                     if data["verification"] is not None
                     else None,
@@ -137,6 +139,7 @@ class AnswerRunsRepository:
                     candidates = %(candidates)s,
                     selected_evidence_ids = %(selected_evidence_ids)s,
                     response = %(response)s,
+                    limitations = %(limitations)s,
                     verification = %(verification)s,
                     versions = %(versions)s,
                     latencies = %(latencies)s,
@@ -158,6 +161,7 @@ class AnswerRunsRepository:
                     "candidates": Jsonb(data["candidates"]),
                     "selected_evidence_ids": Jsonb(data["selected_evidence_ids"]),
                     "response": Jsonb(data["response"]) if data["response"] is not None else None,
+                    "limitations": Jsonb(data["limitations"]),
                     "verification": Jsonb(data["verification"])
                     if data["verification"] is not None
                     else None,
@@ -183,7 +187,7 @@ class AnswerRunsRepository:
             await cur.execute(
                 "SELECT id, session_id, status, question_original, question_anonymized, "
                 "rewritten_query, explicit_filters, inferred_filters, plan, candidates, "
-                "selected_evidence_ids, response, verification, versions, latencies, "
+                "selected_evidence_ids, response, limitations, verification, versions, latencies, "
                 "error_code, error_message, request_id, created_at, revision "
                 "FROM answer_runs WHERE id = %s",
                 (run_id,),
