@@ -46,7 +46,7 @@ from rag.api.app import create_app
 from rag.api.schemas import QueryState
 from rag.api.settings import ApiSettings
 from rag.domain.answer import GeneratedAnswer, QuoteResponse
-from rag.domain.enums import AnswerMode, QueryStatus, SearchStrategy, SourceType
+from rag.domain.enums import AnswerMode, Intent, QueryStatus, SearchStrategy, SourceType
 from rag.domain.library import Edition, Page, Passage, Section, Work
 from rag.domain.providers import GenerationRequest
 from rag.domain.versions import ChunkingVersion, utcnow
@@ -156,6 +156,64 @@ async def _seed(db: Database, store: ArtifactStore) -> Corpus:
         )
         await conn.execute("ANALYZE passages")
     return Corpus(edition_a=edition_a.id, source_sha256=sha)
+
+
+async def _seed_second_work(db: Database, store: ArtifactStore) -> Corpus:
+    """Semilla segunda obra no corpus para consultas comparativas multi-obra."""
+    b_text = "o spleen em contraste com a melancolia de Brás Cubas."
+    pdf_bytes = make_text_pdf([["Capítulo I", "texto de exemplo da segunda obra"]])
+    sha = hashlib.sha256(pdf_bytes).hexdigest()
+    with io.BytesIO(pdf_bytes) as stream:
+        store.put(stream, sha, original_filename="fixture_b.pdf")
+
+    async with db.connection() as conn:
+        work_b = await WorksRepository(conn).create(Work(canonical_title="Memórias Póstumas"))
+        edition_b = await EditionsRepository(conn).create(
+            Edition(
+                work_id=work_b.id,
+                title="Memórias Póstumas (1881)",
+                source_type=SourceType.PDF_TEXT,
+                source_sha256=sha,
+            )
+        )
+        section = Section(
+            edition_id=edition_b.id,
+            level=0,
+            ordinal=0,
+            path=["Capítulo I"],
+            title="Capítulo I",
+        )
+        await SectionsRepository(conn).create_many([section])
+        page = Page.create(
+            edition_id=edition_b.id, physical_index=0, text=b_text, printed_label="p. 1"
+        )
+        await PagesRepository(conn).create_many([page])
+        versions = VersionsRepository(conn)
+        chunking = await versions.get_or_create(
+            ChunkingVersion(label="api-chunk", created_at=utcnow())
+        )
+        provider = ConceptEmbeddingProvider()
+        embedding_version = await versions.get_or_create(provider.embedding_version)
+        passage_id = UUID("b0000000-0000-0000-0000-00000000cafe")
+        await PassagesRepository(conn).create(
+            Passage(
+                id=passage_id,
+                edition_id=edition_b.id,
+                ordinal=0,
+                text=b_text,
+                token_count=len(b_text.split()),
+                chunking_version_id=chunking.id,
+                embedding_version_id=embedding_version.id,
+                section_id=section.id,
+                page_start_id=page.id,
+                page_end_id=page.id,
+                char_start=0,
+                char_end=len(b_text),
+            ),
+            embedding=await provider.embed_query(b_text),
+        )
+        await conn.execute("ANALYZE passages")
+    return Corpus(edition_a=edition_b.id, source_sha256=sha)
 
 
 class BlockingEmbeddingProvider(ConceptEmbeddingProvider):
@@ -308,6 +366,63 @@ async def test_abstention_when_generator_abstains(
         assert isinstance(state.result, GeneratedAnswer)
         assert state.result.abstained is True
         assert state.result.abstention_reason
+
+
+async def test_comparative_query_single_work_returns_limitation_via_get_and_sse(
+    api: tuple[FastAPI, BuildApp, ClientFor],
+) -> None:
+    """AC-11, AC-15: pergunta comparativa com uma obra retorna limitação no GET e SSE (R05)."""
+    app, _build, client_for = api
+    await _seed(app.state.deps.db, app.state.deps.store)
+    client = await client_for(app)
+    async with client:
+        response = await _post_query(
+            client,
+            question="Compare a liberdade em relação ao spleen.",
+            mode="dissertative",
+        )
+        assert response.status_code == 202
+        query_id = UUID(response.json()["query_id"])
+        state = await _wait_terminal(client, query_id)
+        assert state.status is QueryStatus.SUCCEEDED
+        assert state.mode is AnswerMode.DISSERTATIVE
+        assert state.intent is Intent.COMPARATIVE
+        assert len(state.limitations) == 1
+        assert "única obra" in state.limitations[0]
+
+        # GET /queries/{id} e SSE entregam exatamente a mesma limitação
+        data_events: list[dict[str, object]] = []
+        async with client.stream("GET", f"/api/v1/queries/{query_id}/events") as stream:
+            assert stream.status_code == 200
+            async for line in stream.aiter_lines():
+                if line.startswith("data: "):
+                    data_events.append(json.loads(line.removeprefix("data: ")))
+        assert data_events
+        terminal = data_events[-1]
+        assert terminal["status"] == "succeeded"
+        assert terminal["limitations"] == list(state.limitations)
+
+
+async def test_comparative_query_two_works_does_not_declare_single_source_limitation(
+    api: tuple[FastAPI, BuildApp, ClientFor],
+) -> None:
+    """AC-11: pergunta comparativa com duas obras não gera limitação de fonte única (R05)."""
+    app, _build, client_for = api
+    await _seed(app.state.deps.db, app.state.deps.store)
+    await _seed_second_work(app.state.deps.db, app.state.deps.store)
+    client = await client_for(app)
+    async with client:
+        response = await _post_query(
+            client,
+            question="Compare o spleen nas duas obras.",
+            mode="dissertative",
+        )
+        assert response.status_code == 202
+        query_id = UUID(response.json()["query_id"])
+        state = await _wait_terminal(client, query_id)
+        assert state.status is QueryStatus.SUCCEEDED
+        assert state.intent is Intent.COMPARATIVE
+        assert state.limitations == ()
 
 
 async def test_rate_limit_returns_429_with_retry_after(

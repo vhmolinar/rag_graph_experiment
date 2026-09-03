@@ -772,6 +772,43 @@ class TestAnswerRuns:
         assert loaded.status is QueryStatus.ABSTAINED
         assert isinstance(loaded.response, GeneratedAnswer)
         assert loaded.response.abstained
+        assert loaded.limitations == ()
+
+    async def test_run_roundtrip_with_limitations(self, db: Database) -> None:
+        """R05: limitações persistem e sobrevivem a reload do AnswerRun (AC-11, AC-15)."""
+        limitation_text = (
+            "A resposta se apoia em evidências de uma única obra; a ausência de outras "
+            "fontes limita a comparação."
+        )
+        claim = Claim(
+            id="c1",
+            text="Comparação preliminar.",
+            evidence_ids=(UUID("11111111-1111-1111-1111-111111111111"),),
+        )
+        response = GeneratedAnswer(
+            answer_markdown=claim.text,
+            blocks=(AnswerBlock(text=claim.text, claim_id="c1"),),
+            claims=(claim,),
+            abstained=False,
+        )
+        run = AnswerRun(
+            question_original="Compare as obras.",
+            question_anonymized="Compare as obras.",
+            explicit_filters=EditionFilter(),
+        )
+        async with db.connection() as conn:
+            repo = AnswerRunsRepository(conn)
+            await repo.create(run)
+            finished = run.transition(QueryStatus.RUNNING).transition(
+                QueryStatus.SUCCEEDED,
+                response=response,
+                limitations=(limitation_text,),
+            )
+            await repo.save(finished)
+            loaded = await repo.get(run.id)
+        assert loaded is not None
+        assert loaded.status is QueryStatus.SUCCEEDED
+        assert loaded.limitations == (limitation_text,)
 
     async def test_full_roundtrip_with_all_stages_and_versions(self, db: Database) -> None:
         """R09: candidatos dos 4 estágios, evidências e VersionSet completos (AC-06/15)."""

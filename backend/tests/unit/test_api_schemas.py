@@ -72,6 +72,20 @@ def test_build_query_state_dissertative_mode() -> None:
     state = build_query_state(run)
     assert state.mode is AnswerMode.DISSERTATIVE
     assert isinstance(state.result, GeneratedAnswer)
+    assert state.limitations == ()
+
+
+def test_build_query_state_preserves_limitations() -> None:
+    run = AnswerRun(
+        question_original="pergunta comparativa",
+        question_anonymized="pergunta comparativa",
+        explicit_filters=EditionFilter(),
+        status=QueryStatus.SUCCEEDED,
+        response=_generated_answer(),
+        limitations=("Apenas uma obra encontrada.",),
+    )
+    state = build_query_state(run)
+    assert state.limitations == ("Apenas uma obra encontrada.",)
 
 
 def test_build_query_state_failed_carries_safe_error() -> None:
