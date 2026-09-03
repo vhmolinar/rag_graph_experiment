@@ -19,7 +19,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rag.domain.enums import Depth, RankingStage
+from rag.domain.enums import Depth, RankingStage, SearchStrategy
 from rag.domain.runs import RankedCandidate
 
 _MIN_TOP_K = 1
@@ -152,7 +152,10 @@ class RetrievalResult(BaseModel):
 
     Mantém as listas lexical e vetorial independentes (SPEC §8.5), além da
     fundida por RRF e da reranked, para que a execução registre o ranking de
-    cada estágio sem reconstrução. Frozen (RR02).
+    cada estágio sem reconstrução. `strategy` regista a estratégia RESOLVIDA
+    que gerou a execução: `literal` NUNCA popula `vector`/`fused`/`reranked`
+    (SPEC §8.3, B01), enquanto `hybrid`/`expanded` executam os quatro estágios.
+    Frozen (RR02).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -164,8 +167,23 @@ class RetrievalResult(BaseModel):
     policy_version_id: UUID | None = None
     embedding_version_id: UUID | None = None
     run_id: UUID | None = None
+    strategy: SearchStrategy = SearchStrategy.HYBRID
+
+    def final_candidates(self) -> tuple[RankedCandidate, ...]:
+        """Candidatos finais para a montagem de contexto (SPEC §8.5, AC-06).
+
+        `literal` não executa fusão nem reranking: a lista lexical É o ranking
+        final. `hybrid`/`expanded` consumem a lista reranked.
+        """
+        if self.strategy is SearchStrategy.LITERAL:
+            return self.lexical
+        return self.reranked
 
     def answer_run_candidates(self) -> tuple[RankedCandidate, ...]:
         """Candidatos de todos os estágios para persistir em
-        `AnswerRun.candidates` (append-only; AC-06)."""
+        `AnswerRun.candidates` (append-only; AC-06).
+
+        Coincide com a estratégia executada: num caso `literal` só o estágio
+        lexical está populado, entón apenas ele é persistido.
+        """
         return (*self.lexical, *self.vector, *self.fused, *self.reranked)

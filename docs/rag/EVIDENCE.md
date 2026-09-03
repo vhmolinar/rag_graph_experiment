@@ -826,7 +826,10 @@ Testes/evidências:
   `test_reranker_failure_is_not_masked` (falha do reranker propagha fechada),
   `test_policy_version_is_registered_and_reusable` (AC-15 — mesma política,
   mesma versão, params reproduzíveis),
-  `test_empty_candidates_returns_empty_reranked`.
+  `test_empty_candidates_returns_empty_reranked`,
+  `test_literal_strategy_skips_semantic_providers_and_stages` (B01 —
+  estratégia literal persiste somente o ranking lexical, não chama embedding
+  nem reranker e não registra versão de embedding).
 
 Comandos executados em 2026-08-30 (Linux; Python 3.12; PostgreSQL real via
 testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
@@ -842,9 +845,22 @@ testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.so
 | `bash scripts/audit.sh` | OK — 0 vulnerabilidades (pip-audit --strict + npm audit) |
 | `python3 scripts/security_scan.py .` | OK — nenhum IOC bloqueado |
 
+Validação específica da remediação R02 em 2026-09-03:
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK |
+| `uv run ruff format --check src tests` | OK — 138 arquivos |
+| `uv run mypy src tests` | OK — 138 arquivos, strict |
+| `uv run pytest tests/unit -q` | OK — 614 passed, 3 skipped |
+| `uv run pytest tests/integration/test_retrieval_pipeline.py -q` | BLOQUEADO — daemon Docker indisponível neste ambiente; 13 erros de setup antes dos testes |
+| `bash scripts/audit.sh` | OK — pip-audit sem vulnerabilidades; processo excedeu o timeout durante a etapa seguinte |
+| `python3 scripts/security_scan.py .` | OK — nenhum IOC bloqueado |
+
 Critérios: AC-05 (parárfase recuperada via cosseno — coberto integralmente),
 AC-06 (scores/posições lexical, vetorial, RRF e reranking registrados e
-preservados — coberto), AC-07 (exclusão de obra comprovada nos estágios
+preservados para híbrida; literal registra somente o estágio lexical — coberto),
+AC-07 (exclusão de obra comprovada nos estágios
 lexical, vetorial, fusão e reranking — resta o estágio de geração/verificação
 T13 para a cobertura completa).
 
