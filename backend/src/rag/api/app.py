@@ -44,7 +44,7 @@ from rag.domain.providers import (
     RerankerProvider,
     VerifierProvider,
 )
-from rag.domain.retrieval import ExpansionPolicy, RetrievalPolicy
+from rag.domain.retrieval import ExpansionPolicy, HierarchicalPolicy, RetrievalPolicy
 from rag.domain.verification import VerificationPolicy
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.db import Database
@@ -67,6 +67,7 @@ def create_app(
     planner_provider: PlannerProvider | None = None,
     retrieval_policy: RetrievalPolicy | None = None,
     expansion_policy: ExpansionPolicy | None = None,
+    hierarchical_policy: HierarchicalPolicy | None = None,
     context_policy: ContextPolicy | None = None,
     verification_policy: VerificationPolicy | None = None,
     generator_model_name: str | None = None,
@@ -94,6 +95,7 @@ def create_app(
         dissertative=DissertativeService(generator, verifier),
         retrieval_policy=retrieval_policy or RetrievalPolicy.defaults(),
         expansion_policy=expansion_policy or ExpansionPolicy.defaults(),
+        hierarchical_policy=hierarchical_policy or HierarchicalPolicy.defaults(),
         context_policy=context_policy or ContextPolicy.defaults(),
         verification_policy=verification_policy or VerificationPolicy.defaults(),
         broker=EventBroker(),

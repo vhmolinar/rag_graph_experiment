@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from rag.domain.enums import ConceptState, SummaryScope
 from rag.domain.knowledge import Concept, EnrichmentRun, Summary
 from rag.domain.library import Passage
+from rag.domain.query import EditionFilter
 
 _PASSAGE_COLUMNS = (
     "p.id, p.edition_id, p.section_id, p.page_start_id, p.page_end_id, p.ordinal, "
@@ -24,9 +25,58 @@ _PASSAGE_COLUMNS = (
     "p.parent_passage_id, p.embedding_version_id, p.chunking_version_id"
 )
 
+# Configuração FTS portuguesa do schema (mesma de `search.py`), usada para
+# selecionar nós relevantes pelo texto da síntese/conceito (R04, SPEC §8.7).
+_FTS_CONFIG = "portuguese_unaccent"
+
+# Seleção explícita do conjunto corrente (T8-01, R04): um nó hierárquico só é
+# elegível através de passagens de suporte da execução ATIVA da edição — jamais
+# do histórico inativo. Linhas legadas (`index_run_id IS NULL`) continuam
+# elegíveis APENAS enquanto a edição não tem execução ativa, mesmo critério de
+# `LexicalSearchRepository` (compatibilidade que nunca reintroduz um conjunto
+# inativo).
+_ACTIVE_RUN_CONDITION = """(
+    EXISTS (SELECT 1 FROM index_runs ir WHERE ir.id = p.index_run_id AND ir.is_active)
+    OR (p.index_run_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM index_runs ir2
+        WHERE ir2.edition_id = p.edition_id AND ir2.is_active
+    ))
+)"""
+
 
 def _passage_from_row(row: dict[str, Any]) -> Passage:
     return Passage(**row)
+
+
+def _edition_filter_conditions(
+    filters: EditionFilter,
+) -> tuple[list[str], dict[str, object]]:
+    """Condições de filtro obra/edição sobre `passages p` JOIN `editions e`.
+
+    Mesmo padrão dos repositories de busca (T08/T09): os filtros são aplicados
+    ANTES da seleção de nós e de passagens descendentes — uma obra excluída não
+    pode ser localizada por síntese/conceito (AC-07, B03/R04). Valores são
+    sempre parâmetros ligados.
+    """
+    conditions: list[str] = []
+    params: dict[str, object] = {}
+    if filters.include_edition_ids:
+        params["hier_include_edition_ids"] = list(filters.include_edition_ids)
+        conditions.append("p.edition_id = ANY(%(hier_include_edition_ids)s)")
+    if filters.exclude_edition_ids:
+        params["hier_exclude_edition_ids"] = list(filters.exclude_edition_ids)
+        conditions.append("p.edition_id <> ALL(%(hier_exclude_edition_ids)s)")
+    if filters.include_work_ids:
+        params["hier_include_work_ids"] = list(filters.include_work_ids)
+        conditions.append("e.work_id = ANY(%(hier_include_work_ids)s)")
+    if filters.exclude_work_ids:
+        params["hier_exclude_work_ids"] = list(filters.exclude_work_ids)
+        conditions.append("e.work_id <> ALL(%(hier_exclude_work_ids)s)")
+    return conditions, params
+
+
+def _filters_sql(condition: list[str]) -> str:
+    return f" AND {' AND '.join(condition)}" if condition else ""
 
 
 class EnrichmentRunsRepository:
@@ -169,6 +219,73 @@ class SummariesRepository:
             )
             return [_passage_from_row(row) for row in await cur.fetchall()]
 
+    async def select_nodes(
+        self,
+        *,
+        query: str,
+        filters: EditionFilter,
+        limit: int,
+    ) -> list[tuple[UUID, float]]:
+        """Seleciona sínteses relevantes via FTS sobre o texto (R04; SPEC §8.7).
+
+        Só são elegíveis sínteses com pelo menos uma passagem de suporte da
+        execução de indexação/enriquecimento vigente da sua edição, e dentro
+        dos filtros — nunca se seleciona um nó cujo suporte está excluído ou
+        inativo (B03/R04, AC-07). Devolve pares (node_id, score) ordenados por
+        score desc, desempate por id — determinístico.
+        """
+        filters = filters if filters is not None else EditionFilter()
+        conditions, params = _edition_filter_conditions(filters)
+        params["query"] = query
+        params["limit"] = limit
+        sql = (
+            f"SELECT s.id AS node_id, "  # noqa: S608 - allowlist fixa, valores parametrizados
+            f"MAX(ts_rank_cd(to_tsvector('{_FTS_CONFIG}', s.text), "
+            f"plainto_tsquery('{_FTS_CONFIG}', %(query)s))) AS score "
+            "FROM summaries s "
+            "JOIN summary_supports ss ON ss.summary_id = s.id "
+            "  AND ss.edition_id = s.edition_id "
+            "JOIN passages p ON p.id = ss.passage_id AND p.edition_id = ss.edition_id "
+            "JOIN editions e ON e.id = p.edition_id "
+            f"WHERE to_tsvector('{_FTS_CONFIG}', s.text) @@ "
+            f"plainto_tsquery('{_FTS_CONFIG}', %(query)s) "
+            f"AND {_ACTIVE_RUN_CONDITION}{_filters_sql(conditions)} "
+            "GROUP BY s.id ORDER BY score DESC, s.id LIMIT %(limit)s"
+        )
+        async with self._conn.cursor() as cur:
+            await cur.execute(sql, params)
+            return [(row[0], float(row[1])) for row in await cur.fetchall()]
+
+    async def supporting_passages_current(
+        self,
+        summary_id: UUID,
+        *,
+        filters: EditionFilter,
+        limit: int,
+    ) -> list[Passage]:
+        """Recuperação descendente limitada à execução vigente e filtros (R04).
+
+        Desce até as passagens ORIGINAIS de suporte, aplicando ANTES da
+        seleção o conjunto corrente (`_ACTIVE_RUN_CONDITION`) e os filtros de
+        obra/edição (AC-07). A síntese NUNCA é devolvida como passagem — só as
+        passagens que a sustentam (AC-12).
+        """
+        filters = filters if filters is not None else EditionFilter()
+        conditions, params = _edition_filter_conditions(filters)
+        params["summary_id"] = summary_id
+        params["limit"] = limit
+        sql = (
+            f"SELECT {_PASSAGE_COLUMNS} FROM summary_supports ss "  # noqa: S608
+            "JOIN passages p ON p.id = ss.passage_id AND p.edition_id = ss.edition_id "
+            "JOIN editions e ON e.id = p.edition_id "
+            f"WHERE ss.summary_id = %(summary_id)s "
+            f"AND {_ACTIVE_RUN_CONDITION}{_filters_sql(conditions)} "
+            "ORDER BY ss.ordinal LIMIT %(limit)s"
+        )
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(sql, params)
+            return [_passage_from_row(row) for row in await cur.fetchall()]
+
 
 class ConceptsRepository:
     def __init__(self, conn: AsyncConnection) -> None:
@@ -241,6 +358,75 @@ class ConceptsRepository:
                 "WHERE ce.concept_id = %s ORDER BY p.ordinal",
                 (concept_id,),
             )
+            return [_passage_from_row(row) for row in await cur.fetchall()]
+
+    async def select_nodes(
+        self,
+        *,
+        query: str,
+        filters: EditionFilter,
+        limit: int,
+    ) -> list[tuple[UUID, float]]:
+        """Seleciona conceitos relevantes via FTS sobre rótulo+aliases (R04).
+
+        Um conceito só é elegível através de evidências de passagens da
+        execução de indexação/enriquecimento vigente, e dentro dos filtros —
+        nunca se seleciona um conceito cujas evidências estão excluídas ou
+        inativas (B03/R04, AC-07). O score é o MAXIMO sobre rótulo e aliases
+        (um conceito pode corresponder por vários canais). Devolve pares
+        (node_id, score) determinísticos.
+        """
+        filters = filters if filters is not None else EditionFilter()
+        conditions, params = _edition_filter_conditions(filters)
+        params["query"] = query
+        params["limit"] = limit
+        text_expr = "c.normalized_label || ' ' || COALESCE(ca.expression, '')"
+        sql = (
+            "SELECT c.id AS node_id, "  # noqa: S608 - allowlist fixa, valores parametrizados
+            f"MAX(ts_rank_cd(to_tsvector('{_FTS_CONFIG}', {text_expr}), "
+            f"plainto_tsquery('{_FTS_CONFIG}', %(query)s))) AS score "
+            "FROM concepts c "
+            "LEFT JOIN concept_aliases ca ON ca.concept_id = c.id "
+            "JOIN concept_evidence ce ON ce.concept_id = c.id "
+            "JOIN passages p ON p.id = ce.passage_id "
+            "JOIN editions e ON e.id = p.edition_id "
+            f"WHERE to_tsvector('{_FTS_CONFIG}', {text_expr}) @@ "
+            f"plainto_tsquery('{_FTS_CONFIG}', %(query)s) "
+            f"AND {_ACTIVE_RUN_CONDITION}{_filters_sql(conditions)} "
+            "GROUP BY c.id ORDER BY score DESC, c.id LIMIT %(limit)s"
+        )
+        async with self._conn.cursor() as cur:
+            await cur.execute(sql, params)
+            return [(row[0], float(row[1])) for row in await cur.fetchall()]
+
+    async def supporting_passages_current(
+        self,
+        concept_id: UUID,
+        *,
+        filters: EditionFilter,
+        limit: int,
+    ) -> list[Passage]:
+        """Recuperação descendente de conceito limitada a execução vigente (R04).
+
+        Desce até as passagens ORIGINAIS de evidência, aplicando ANTES da
+        seleção o conjunto corrente (`_ACTIVE_RUN_CONDITION`) e os filtros de
+        obra/edição (AC-07). O conceito NUNCA é devolvido como passagem — só as
+        passagens que o sustentam (AC-12).
+        """
+        filters = filters if filters is not None else EditionFilter()
+        conditions, params = _edition_filter_conditions(filters)
+        params["concept_id"] = concept_id
+        params["limit"] = limit
+        sql = (
+            f"SELECT DISTINCT {_PASSAGE_COLUMNS} FROM concept_evidence ce "  # noqa: S608
+            "JOIN passages p ON p.id = ce.passage_id "
+            "JOIN editions e ON e.id = p.edition_id "
+            f"WHERE ce.concept_id = %(concept_id)s "
+            f"AND {_ACTIVE_RUN_CONDITION}{_filters_sql(conditions)} "
+            "ORDER BY p.ordinal LIMIT %(limit)s"
+        )
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(sql, params)
             return [_passage_from_row(row) for row in await cur.fetchall()]
 
     async def count_for_edition(self, edition_id: UUID) -> int:

@@ -24,7 +24,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rag.domain.enums import Depth, ExpansionKind, RankingStage, SearchStrategy
+from rag.domain.enums import (
+    Depth,
+    ExpansionKind,
+    HierarchicalSourceKind,
+    RankingStage,
+    SearchStrategy,
+)
 from rag.domain.query import LexicalQuery
 
 _MIN_TOP_K = 1
@@ -266,6 +272,131 @@ class ExpansionResult(BaseModel):
     vector: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
 
 
+class HierarchicalHit(BaseModel):
+    """Nó hierárquico selecionado e passagem descendente (R04/B03; SPEC §8.7).
+
+    Registra, para auditoria (AC-15), qual síntese/conceito localizou qual
+    passagem ORIGINAL no estágio hierárquico. Só guarda IDs — o texto do nó
+    (síntese/conceito) NUNCA entra em logs, traces, candidatos ou evidências
+    (AC-12, AC-16).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: HierarchicalSourceKind
+    node_id: UUID
+    passage_id: UUID
+
+
+class HierarchicalBudget(BaseModel):
+    """Orçamento do estágio hierárquico por profundidade (R04; SPEC §8.7).
+
+    `max_summary_nodes`/`max_concept_nodes` limitam os nós relevantes
+    selecionados por origem; `max_passages_per_node` limita as passagens
+    descendentes de cada nó; `max_total_passages` é o teto TOTAL do estágio.
+    Parâmetros calibrables (NOTES.md §4), versionados via
+    `HierarchicalPolicyVersion` (AC-15).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    depth: Depth
+    max_summary_nodes: int = Field(ge=1, le=500)
+    max_concept_nodes: int = Field(ge=1, le=500)
+    max_passages_per_node: int = Field(ge=1, le=500)
+    max_total_passages: int = Field(ge=1, le=1000)
+
+    @model_validator(mode="after")
+    def _per_node_never_exceeds_total(self) -> Self:
+        if self.max_passages_per_node > self.max_total_passages:
+            raise ValueError("max_passages_per_node não pode exceder max_total_passages")
+        return self
+
+
+class HierarchicalPolicy(BaseModel):
+    """Conjunto de orçamentos hierárquicos por profundidade (SPEC §8.7).
+
+    Frozen, com a coleção como tuple de pares (imutável, RR02). Exige cobertura
+    das três profundidades — uma política parcial não pode existir
+    silenciosamente. Versionada via `HierarchicalPolicyVersion` (AC-15).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    budgets: tuple[tuple[Depth, HierarchicalBudget], ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _covers_all_depths_exactly_once(self) -> Self:
+        depths = [depth for depth, _ in self.budgets]
+        if len(depths) != len(set(depths)):
+            raise ValueError("cada profundidade pode aparecer uma única vez")
+        if set(depths) != set(Depth):
+            raise ValueError("política hierárquica deve cobrir as três profundidades")
+        for depth, budget in self.budgets:
+            if budget.depth is not depth:
+                raise ValueError("budget.depth deve coincidir com a chave da política")
+        return self
+
+    def budget_for(self, depth: Depth) -> HierarchicalBudget:
+        for d, budget in self.budgets:
+            if d is depth:
+                return budget
+        raise ValueError(f"política hierárquica ausente para profundidade {depth!s}")
+
+    @classmethod
+    def defaults(cls) -> "HierarchicalPolicy":
+        """Valores iniciais conservadores e monotonos por profundidade;
+        calibração no benchmark de T19 (NOTES.md §4)."""
+        return cls(
+            budgets=(
+                (
+                    Depth.BRIEF,
+                    HierarchicalBudget(
+                        depth=Depth.BRIEF,
+                        max_summary_nodes=5,
+                        max_concept_nodes=5,
+                        max_passages_per_node=3,
+                        max_total_passages=15,
+                    ),
+                ),
+                (
+                    Depth.STANDARD,
+                    HierarchicalBudget(
+                        depth=Depth.STANDARD,
+                        max_summary_nodes=10,
+                        max_concept_nodes=10,
+                        max_passages_per_node=5,
+                        max_total_passages=30,
+                    ),
+                ),
+                (
+                    Depth.DEEP,
+                    HierarchicalBudget(
+                        depth=Depth.DEEP,
+                        max_summary_nodes=20,
+                        max_concept_nodes=20,
+                        max_passages_per_node=8,
+                        max_total_passages=60,
+                    ),
+                ),
+            )
+        )
+
+
+class HierarchicalResult(BaseModel):
+    """Resultado do estágio hierárquico (R04; SPEC §8.7, AC-12).
+
+    `candidates` são PASSAGES originais (`RankedCandidate`, stage
+    HIERARCHICAL) — nunca texto de síntese/conceito (AC-12). `hits` registra,
+    para auditoria, qual nó localizou qual passagem (AC-15).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidates: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
+    hits: tuple[HierarchicalHit, ...] = Field(default_factory=tuple)
+
+
 def fuse_rankings(
     ranked_lists: Sequence[Sequence[RankedCandidate]],
     *,
@@ -310,13 +441,21 @@ class RetrievalResult(BaseModel):
     (SPEC §8.3, B01), enquanto `hybrid`/`expanded` executam os quatro estágios.
     Na estratégia `expanded`, `lexical`/`vector` são a concatenação de TODAS
     as expansões e `expansions` preserva a consulta e o ranking de cada uma —
-    a origem de cada candidato fica rastreável (B02/R03, AC-15). Frozen (RR02).
+    a origem de cada candidato fica rastreável (B02/R03, AC-15).
+
+    R04 (B03): quando `plan.needs_hierarchical` governa o estágio hierárquico
+    (SPEC §8.7), `hierarchical` preserva o ranking do estágio (passagens
+    ORIGINAIS localizadas por sínteses/conceitos, stage HIERARCHICAL) e
+    `hierarchical_hits` registra qual nó localizou qual passagem (AC-12/AC-15).
+    Frozen (RR02).
     """
 
     model_config = ConfigDict(frozen=True)
 
     lexical: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
     vector: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
+    hierarchical: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
+    hierarchical_hits: tuple[HierarchicalHit, ...] = Field(default_factory=tuple)
     fused: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
     reranked: tuple[RankedCandidate, ...] = Field(default_factory=tuple)
     expansions: tuple[ExpansionResult, ...] = Field(default_factory=tuple)
@@ -329,7 +468,9 @@ class RetrievalResult(BaseModel):
         """Candidatos finais para a montagem de contexto (SPEC §8.5, AC-06).
 
         `literal` não executa fusão nem reranking: a lista lexical É o ranking
-        final. `hybrid`/`expanded` consumem a lista reranked.
+        final. `hybrid`/`expanded` consumem a lista reranked. Os candidatos do
+        estágio hierárquico entram na fusão/reranking e, por tanto, estão
+        contidos na lista reranked quando `needs_hierarchical` os promove.
         """
         if self.strategy is SearchStrategy.LITERAL:
             return self.lexical
@@ -340,6 +481,7 @@ class RetrievalResult(BaseModel):
         `AnswerRun.candidates` (append-only; AC-06).
 
         Coincide com a estratégia executada: num caso `literal` só o estágio
-        lexical está populado, entón apenas ele é persistido.
+        lexical está populado, entón apenas ele é persistido. O estágio
+        hierárquico é incluído quando executado (R04).
         """
-        return (*self.lexical, *self.vector, *self.fused, *self.reranked)
+        return (*self.lexical, *self.vector, *self.hierarchical, *self.fused, *self.reranked)

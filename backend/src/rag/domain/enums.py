@@ -82,8 +82,22 @@ class QueryStatus(StrEnum):
 class RankingStage(StrEnum):
     LEXICAL = "lexical"
     VECTOR = "vector"
+    # R04 (B03): estágio hierárquico — sínteses/conceitos localizam passagens
+    # originais que entram na fusão (SPEC §8.7, AC-12).
+    HIERARCHICAL = "hierarchical"
     FUSED = "fused"
     RERANKED = "reranked"
+
+
+class HierarchicalSourceKind(StrEnum):
+    """Origem de um nó hierárquico que localizou uma passagem (R04, SPEC §8.7).
+
+    Preservar a origem de cada passagem descendente exige distinguir sínteses
+    de conceitos na auditoria do estágio hierárquico (AC-12/AC-15).
+    """
+
+    SUMMARY = "summary"
+    CONCEPT = "concept"
 
 
 class ExpansionKind(StrEnum):

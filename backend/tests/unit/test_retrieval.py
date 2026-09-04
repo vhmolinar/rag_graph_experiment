@@ -271,19 +271,20 @@ class TestRetrievalBudgetAndPolicy:
 
 class TestRetrievalResult:
     def test_answer_run_candidates_preserves_all_stages(self) -> None:
-        """AC-06: a tuple a persistir mantém lexical, vetorial, RRF e
-        reranking distintos e rastreáveis."""
+        """AC-06: a tuple a persistir mantém lexical, vetorial, hierárquico,
+        RRF e reranking distintos e rastreáveis."""
         a, b = uuid4(), uuid4()
         result = RetrievalResult(
             lexical=(_candidate(a, RankingStage.LEXICAL, 12.0, 0),),
             vector=(_candidate(a, RankingStage.VECTOR, 0.91, 0),),
+            hierarchical=(_candidate(a, RankingStage.HIERARCHICAL, 0.04, 0),),
             fused=(_candidate(a, RankingStage.FUSED, 0.033, 0),),
             reranked=(_candidate(b, RankingStage.RERANKED, 0.87, 0),),
             policy_version_id=uuid4(),
         )
         candidates = result.answer_run_candidates()
         assert {c.stage for c in candidates} == set(RankingStage)
-        assert len(candidates) == 4
+        assert len(candidates) == 5
 
     def test_candidates_persist_into_answer_run_append_only(self) -> None:
         """AC-06: as transições de `AnswerRun.candidates` aceitam o resultado
@@ -292,6 +293,7 @@ class TestRetrievalResult:
         result = RetrievalResult(
             lexical=(_candidate(a, RankingStage.LEXICAL, 1.0, 0),),
             vector=(_candidate(b, RankingStage.VECTOR, 0.9, 0),),
+            hierarchical=(_candidate(a, RankingStage.HIERARCHICAL, 0.05, 0),),
             fused=(_candidate(a, RankingStage.FUSED, 0.03, 0),),
             reranked=(_candidate(b, RankingStage.RERANKED, 0.8, 0),),
         )
@@ -301,7 +303,7 @@ class TestRetrievalResult:
             explicit_filters=EditionFilter(),
             created_at=utcnow(),
         ).transition(QueryStatus.RUNNING, candidates=result.answer_run_candidates())
-        assert len(run.candidates) == 4
+        assert len(run.candidates) == 5
         assert {c.stage for c in run.candidates} == set(RankingStage)
         with pytest.raises(InvalidTransitionError, match="append-only"):
             run.transition(QueryStatus.RUNNING, candidates=())  # append-only

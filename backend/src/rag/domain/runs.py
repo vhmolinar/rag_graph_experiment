@@ -9,7 +9,7 @@ from rag.domain.answer import GeneratedAnswer, QuoteResponse, VerificationResult
 from rag.domain.enums import QueryStatus
 from rag.domain.errors import ErrorCode, InvalidTransitionError
 from rag.domain.query import EditionFilter, QueryPlan
-from rag.domain.retrieval import ExpansionResult
+from rag.domain.retrieval import ExpansionResult, HierarchicalHit
 from rag.domain.retrieval import RankedCandidate as RankedCandidate
 from rag.domain.versions import utcnow
 
@@ -41,6 +41,9 @@ class VersionSet(BaseModel):
     # R03 (B02): política de expansão (`expanded`) — orçamento total por
     # profundidade que governou a recuperação (AC-15).
     expansion_policy_version_id: UUID | None = None
+    # R04 (B03): política do estágio hierárquico — orçamento de nós relevantes
+    # e tetos de passagens descendentes que governou a recuperação (AC-15).
+    hierarchical_policy_version_id: UUID | None = None
 
 
 _TERMINAL: frozenset[QueryStatus] = frozenset(
@@ -75,6 +78,7 @@ _ALLOWED_CHANGE_FIELDS: frozenset[str] = frozenset(
         "plan",
         "candidates",
         "expansions",
+        "hierarchical_hits",
         "selected_evidence_ids",
         "response",
         "verification",
@@ -84,7 +88,12 @@ _ALLOWED_CHANGE_FIELDS: frozenset[str] = frozenset(
         "error_message",
     }
 )
-_APPEND_ONLY_FIELDS: tuple[str, ...] = ("candidates", "latencies", "expansions")
+_APPEND_ONLY_FIELDS: tuple[str, ...] = (
+    "candidates",
+    "latencies",
+    "expansions",
+    "hierarchical_hits",
+)
 
 
 class AnswerRun(BaseModel):
@@ -109,6 +118,10 @@ class AnswerRun(BaseModel):
     # com scores e posições por expansão — rastreabilidade do ranking por
     # expansão (AC-15). Vazio nas demais estratégias.
     expansions: tuple[ExpansionResult, ...] = Field(default_factory=tuple)
+    # R04 (B03): auditoria do estágio hierárquico — qual síntese/conceito
+    # localizou qual passagem original (AC-12/AC-15). Vazio quando o plano não
+    # marca `needs_hierarchical`.
+    hierarchical_hits: tuple[HierarchicalHit, ...] = Field(default_factory=tuple)
     selected_evidence_ids: tuple[UUID, ...] = Field(default_factory=tuple)
     response: GeneratedAnswer | QuoteResponse | None = None
     verification: VerificationResult | None = None

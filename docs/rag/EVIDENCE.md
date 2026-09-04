@@ -15,16 +15,16 @@ Legenda: ⬜ pendente · ◐ parcial · ✅ coberto (com evidência)
 | AC-03 | Passagem citada abre edição, página e trecho corretos | ◐ | T04: `test_artifacts.py` (armazenamento por hash, ranges); R01: integridade edição↔página/seção no banco; T05: `test_pages_and_offsets_recompose_excerpt` (offsets recompõem o trecho), `test_scan_ingest_preserves_original_identity` (identidade do original com derivado OCR); T06: `test_offsets_recompose_original_single_page`/`test_offsets_recompose_original_across_pages` (chunker puro), `test_indexes_pdf_with_page_offsets` (passagem persistida recompõe o trecho contra PostgreSQL real); T12: `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata`, `test_opening_origin_reproduces_text` (metadados citáveis e recomposição) e `test_quote_multipage_passage_reproduces_text` (passagem multipágina com início/fim de páginas, rótulos e offsets por página). T14: `test_api.py::test_source_range_requests` e `test_quote_flow_succeeds` contribuem com source range e citação via API (integração executada na revisão T14 via podman). Falta o caminho passagem→leitor (T17). |
 | AC-04 | Busca literal encontra frases exatas em português | ✅ | T08: `test_exact_phrase_requires_contiguous_words` (frase contígua encontrada; ordem trocada não corresponde), `test_accent_insensitive_required_term` (acento normalizado), `test_stemming_matches_inflected_form` (flexão via `portuguese_stem`) — todos contra PostgreSQL real |
 | AC-05 | Busca semântica encontra paráfrases | ✅ | T09: `test_paraphrase_recovered_by_vector_search` (paráfrase sem termos principais recuperada via cosseno contra PostgreSQL real), `test_lexical_does_not_recover_paraphrase` (independência dos estágios), `test_cosine_score_is_similarity`; R03: `test_retrieval_expanded_pipeline.py::test_alias_and_subquestion_alter_candidates_in_expanded_but_not_hybrid` (evidência recuperável apenas por alias/subpergunta entra nos finais de `expanded`, não de `hybrid`) |
-| AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case` |
+| AC-06 | Rankings lexical, vetorial, RRF e reranking registrados | ✅ | T02: `test_candidates_record_all_stages`; T03: `test_full_roundtrip_with_all_stages_and_versions`; T09: `test_retrieval.py::TestRetrievalResult` (answer_run_candidates preserva os 4 estágios; append-only em `AnswerRun`), `test_retrieval_pipeline.py::test_pipeline_preserves_all_stages_and_fuses_deterministically` (scores RRF determinísticos 2/61, 1/62, 1/63), `test_reranker_changes_order_in_controlled_case`; R04: o estágio HIERARCHICAL entra em `answer_run_candidates`/`AnswerRun.candidates` (`test_retrieval.py::TestRetrievalResult`, `test_runs.py::test_candidates_record_all_stages`, `test_repositories.py::TestAnswerRuns::test_full_roundtrip_with_all_stages_and_versions`) |
 | AC-07 | Exclusão de obra vale em todos os estágios | ✅ | T02/T08/T09/T10 cobrem filtros desde o plano até o reranker; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` prova que a exclusão aplicada na recuperação flui à geração, que recebe somente evidências permitidas. |
 | AC-08 | Modo quote sem texto sintetizado | ✅ | T02: `test_answer.py::TestQuoteResponse` (garantia estrutural de tipo — `QuoteResponse` só tem `evidences`, sem prosa); T12: `test_context.py::TestQuoteContract`, `test_context_pipeline.py::test_quote_snapshot_with_text_and_metadata` e `test_quote_has_no_generation_path` (verificação estrutural T12-03: nem `quote` nem `assemble` aceitam provedor de geração). |
 | AC-09 | Dissertative sem afirmação factual sem evidência/inferência marcada | ✅ | T02: `test_answer.py::TestClaim`; T13: `test_dissertative_pipeline.py::test_unsupported_claim_is_marked_as_inference`, `test_dissertative.py::TestUnsupportedClaims` e `test_verification.py::TestMarkUnsupportedAsInference`; correções da revisão T13: contradição sempre prevalece sobre `supported` (T13-02: `test_verification.py::test_contradiction_marks_unsupported_even_when_supported_true`, `test_dissertative.py::test_contradiction_with_supported_true_marks_inference`), Markdown entregue ligado às claims via `blocks` (T13-03: `test_answer.py::TestGeneratedAnswer`, `test_dissertative.py::TestAnswerMarkdownBinding`), bloco nulo restrito a whitespace — prosa factual e conteúdo numérico fora das claims rejeitados por construção e no serviço (T13-R2-01/T13-R3-01: `test_answer.py::test_null_block_with_factual_prose_is_rejected`, `test_null_block_with_semantic_content_is_rejected`, `test_whitespace_null_blocks_allowed`, `test_dissertative.py::test_service_rejects_generator_prose_outside_claims`, `test_service_rejects_generator_numeric_content_outside_claims`, `test_generation_adapter.py::test_null_block_with_factual_prose_raises_model_response_error`, `test_null_block_with_numeric_content_raises_model_response_error`); revisão consolidada: `limitations` sai do contrato do gerador — limitações derivadas no serviço (T13-FULL-01: `test_answer.py::test_generated_answer_has_no_limitations_field`, `test_generation_adapter.py::test_model_limitations_are_dropped`, `test_dissertative.py::test_limitations_are_derived_not_generator_prose`) e a saída do verificador fica reduzida a IDs/flags/códigos, com descrição fixa na contradição (T13-FULL-02: `test_verifier_adapter.py::test_verifier_free_text_detail_is_ignored`, `test_verification.py::TestAssessClaims`). |
 | AC-10 | Pergunta sem suporte produz abstenção | ✅ | T02: `test_answer.py::TestGeneratedAnswer`; T13: `test_dissertative_pipeline.py::test_question_without_support_abstains`, `TestGeneratorAbstention` e `TestUnsupportedClaims::test_low_coverage_forces_abstention`; T13-01: abstenção NUNCA carrega prosa — Markdown vazio, sem blocos/limitações (`test_answer.py::TestGeneratedAnswer::test_abstained_answer_cannot_have_text/limitations/blocks`) e substituição canônica no serviço (`test_dissertative.py::test_generator_abstention_is_replaced_with_canonical`). |
-| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10/T12 cobrem diversidade adaptativa sem quota cega; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` e `test_dissertative.py::TestComparativeLimitation` cobrem declaração determinística com fonte única; R03: `test_retrieval_expanded_pipeline.py` prova a execução real da estratégia `expanded` (subperguntas e aliases alteram candidatos com orçamento total) que `automatic` escolhe para comparativas/conceituais — cobertura de aspectos comparativos na recuperação |
-| AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts`, `test_summary_without_support_is_rejected`, `test_summaries_never_serve_as_citations`, `test_concept_leads_to_original_passages`, `test_two_reindexations_never_use_inactive_passages`, `test_enrichment.py::TestValidatedSupports`, `test_cli.py::TestEnrichCommand`; T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable`. |
+| AC-11 | Comparativa não usa uma obra só sem declarar limitação | ✅ | T10/T12 cobrem diversidade adaptativa sem quota cega; T13: `test_dissertative_pipeline.py::test_comparative_with_single_work_declares_limitation` e `test_dissertative.py::TestComparativeLimitation` cobrem declaração determinística com fonte única; R03: `test_retrieval_expanded_pipeline.py` prova a execução real da estratégia `expanded` (subperguntas e aliases alteram candidatos com orçamento total) que `automatic` escolhe para comparativas/conceituais — cobertura de aspectos comparativos na recuperação; R04: `test_retrieval_hierarchical_pipeline.py::test_needs_hierarchical_governs_real_stage_and_localizes_passages` (o plano comparativo/conceitual marca `needs_hierarchical` e o estágio hierárquico localiza passagens que a busca comum não recupera — cobertura da recuperação comparativa via índice hierárquico) |
+| AC-12 | Resumos levam a passagens; nunca citados | ✅ | T02: `test_knowledge.py::TestSummary` (síntese exige suporte), `test_library.py::test_context_header_is_not_citable`; T06: `test_context_header_includes_work_and_section`; T11: `test_enrichment_pipeline.py::test_full_hierarchy_and_concepts`, `test_summary_without_support_is_rejected`, `test_summaries_never_serve_as_citations`, `test_concept_leads_to_original_passages`, `test_two_reindexations_never_use_inactive_passages`, `test_enrichment.py::TestValidatedSupports`, `test_cli.py::TestEnrichCommand`; T12: `test_context_pipeline.py::test_parent_expansion_in_context_never_citable`; R04: `test_retrieval_hierarchical_pipeline.py::test_needs_hierarchical_governs_real_stage_and_localizes_passages` (sínteses/conceitos localizam passagens na recuperação real, auditoria `HierarchicalHit`), `test_only_passages_become_candidates_and_evidence` (só passagens viram candidatos/`EvidenceRef` — síntese/conceito nunca), `test_hierarchical_resolves_only_active_index_run_supports` (só suportes da execução vigente) |
 | AC-13 | Contexto de sessão vira pergunta autônoma registrada | ⬜ | T10: `build_semantic_query`/`QueryPlan.semantic_query` produzem a pergunta autônoma estruturada que T15 registra (`AnswerRun.rewritten_query`); a reescrita de follow-up com contexto de sessão é T15 (T14/T16 cobrem API/UI) |
 | AC-14 | Falha/timeout de modelo = erro tipado, sem fallback sem RAG | ✅ | T02/T07/T11 cobrem adapters anteriores; T13: `test_verifier_adapter.py`, `test_dissertative_pipeline.py::test_verifier_timeout_releases_no_unverified_answer`, `TestVerifierFailure`, `test_invalid_citation_is_regenerated_with_feedback` e `test_invalid_id_persists_fails_closed`; T14: `test_api.py::test_internal_error_does_not_expose_details` e `test_api_app.py::test_error_response_never_leaks_internals`. |
-| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02/T03/T06/T11/T12 cobrem versões anteriores; T13: `test_dissertative_pipeline.py::test_versions_are_registered`, `test_same_policy_is_idempotent_version`, migration `0008_verification_policy_versions` e `test_dissertative.py::TestVersions`; R03: `test_retrieval_expanded_pipeline.py::test_expansions_and_policy_version_persisted` (consultas/scores/posições por expansão persistidas em `AnswerRun.expansions`; `ExpansionPolicyVersion` idempotente — migration `0011`). Falta `AnswerRun` completo em T18. |
+| AC-15 | Resposta registra versões e evidências para reprodução | ◐ | T02/T03/T06/T11/T12 cobrem versões anteriores; T13: `test_dissertative_pipeline.py::test_versions_are_registered`, `test_same_policy_is_idempotent_version`, migration `0008_verification_policy_versions` e `test_dissertative.py::TestVersions`; R03: `test_retrieval_expanded_pipeline.py::test_expansions_and_policy_version_persisted` (consultas/scores/posições por expansão persistidas em `AnswerRun.expansions`; `ExpansionPolicyVersion` idempotente — migration `0011`); R04: `test_retrieval_hierarchical_pipeline.py::test_hierarchical_hits_and_policy_version_persisted` (auditoria `AnswerRun.hierarchical_hits` e `HierarchicalPolicyVersion` idempotente — migration `0012`). Falta `AnswerRun` completo em T18. |
 | AC-16 | Logs/traces sem segredos nem texto integral | ◐ | T05: CLI com structlog (nomes de arquivo e ids apenas); `IngestReport`/`OcrReport` sem texto do livro; `test_error_does_not_leak_yaml_internals`; T07: `test_resilience.py::test_failure_logs_are_free_of_operation_content` (retry/circuit-breaker dos adapters de modelo só loga metadados — nunca prompts, documentos ou chaves, garantido por construção); T14: logs JSON com request ID e handler sanitizado. Falta: traces (T18). |
 | AC-17 | Conteúdo anonimizado expira em 90 dias | ⬜ | T18 |
 | AC-18 | API com validação, CORS restrito, rate limiting, headers | ✅ | T14: `test_api_app.py`, `test_api_security.py`, `test_api_events.py`, `test_api_schemas.py` e `test_api.py` cobrem OpenAPI, validação, CORS, rate limit, headers, SSE, cancelamento, source ranges e health. Correções das revisões T14 (REVIEW_T14.md) e T14 rodada 2 (REVIEW_T14_ROUND2.md): ordem real da pilha corrigida — a 429 atravessa `RequestId`, `SecurityHeaders` e `CORS` (testes compuestos `test_api_app.py::test_rate_limited_429_keeps_envelope_and_security_headers`/`test_rate_limited_429_serves_cors_to_allowed_origin`, este último exige `access-control-allow-origin` na 429; integração `test_api.py::test_rate_limit_returns_429_with_retry_after` exige `X-Request-ID` + headers na 429); buckets do rate limiter com TTL e cardinalidade limitada (`test_api_security.py::test_rate_limit_buckets_expire_after_ttl`, `test_rate_limit_buckets_are_recreated_after_ttl`, `test_rate_limit_caps_bucket_cardinality`); `request_id` do erro terminal persistido e SSE correlacionável (`test_api_schemas.py`, `test_api.py::test_failed_query_error_request_id_is_correlatable`, `test_failed_query_sse_terminal_carries_request_id`). |
@@ -935,6 +935,83 @@ recuperação ainda não está conectado à geração/contexto (T12/T13), que
 consumirão `RetrievalResult`/`RetrievalService`; os testes de integração foram
 executados neste ambiente via podman (sem Docker) com ryuk desativado —
 equivalente em Docker requere o mesmo fluxo de `testcontainers`.
+
+Remediação R04 em 2026-09-04 (recuperação hierárquica integrada — B03):
+
+Entregáveis:
+
+- **Estágio hierárquico** (`application/hierarchical.py`,
+  `HierarchicalRetrievalService`): seleciona sínteses/conceitos relevantes via
+  FTS (`SummariesRepository.select_nodes`/`ConceptsRepository.select_nodes`),
+  desce até as passagens ORIGINAIS da execução vigente
+  (`supporting_passages_current`) e devolve `HierarchicalResult`
+  (`candidates` — passagens com stage HIERARCHICAL — e `hits` — auditoria de
+  qual nó localizou qual passagem). Filtros de obra/edição aplicados ANTES e
+  DEPOIS da seleção de nós (AC-07); só suportes da execução de
+  indexação/enriquecimento vigente são resolvidos; o texto de síntese/
+  conceito NUNCA é passagem, evidência ou candidato (AC-12).
+- **Domínio** (`domain/retrieval.py`): `HierarchicalHit` (kind/node_id/
+  passage_id), `HierarchicalBudget`/`HierarchicalPolicy` (orçamento de nós
+  relevantes por origem e tetos de passagens descendentes, por profundidade);
+  `RetrievalResult.hierarchical`/`hierarchical_hits`; `RankingStage.
+  HIERARCHICAL` e `HierarchicalSourceKind` em `domain/enums.py`.
+- **Versionamento** (`domain/versions.py` + migration `0012`):
+  `HierarchicalPolicyVersion` (tabela `hierarchical_policy_versions`, trigger
+  de imutabilidade) e coluna `answer_runs.hierarchical_hits` para auditoria
+  persistida (AC-15).
+- **Orquestração** (`application/search.py`): `RetrievalService.retrieve`
+  executa o estágio hierárquico quando `plan.needs_hierarchical` governa (falha
+  fechada sem política hierárquica — TypeError antes de consultar o banco); as
+  passagens descendentes entram na fusão RRF e no reranking, coordenadas com a
+  estratégia `expanded` (R03); `_persist` grava `hierarchical_hits` (append-only)
+  e a versão de política hierárquica. `query_runner.py`/`deps.py`/`app.py`
+  passam `HierarchicalPolicy.defaults()`.
+- **Testes** (unit `test_hierarchical.py` 12; integração
+  `test_retrieval_hierarchical_pipeline.py` 7).
+
+Comandos executados em 2026-09-04 (Linux; Python 3.12; PostgreSQL real via
+testcontainers sobre podman, `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`,
+`TESTCONTAINERS_RYUK_DISABLED=true`):
+
+| Comando | Resultado |
+|---------|-----------|
+| `uv run ruff check src tests` | OK — all checks passed |
+| `uv run ruff format --check src tests` | OK — 144 arquivos |
+| `uv run mypy src tests` | OK — 142 arquivos, strict |
+| `uv run pytest tests/unit -q` | OK — 642 passed, 3 skipped |
+| `uv run pytest tests/contract -q` | OK — 26 passed |
+| `uv run pytest tests/integration -q` | OK — 247 passed, 1 skipped (PostgreSQL real via podman) |
+
+Testes-chave (B03/R04):
+
+- `test_needs_hierarchical_governs_real_stage_and_localizes_passages` —
+  `needs_hierarchical` governa o estágio: sínteses/conceitos localizam p2/p3
+  que a busca lexical+vetorial comum não recupera; sem o flag, o estágio não é
+  executado e as passagens não entram nos finais;
+- `test_only_passages_become_candidates_and_evidence` — AC-12: só passagens
+  viram candidatos e `EvidenceRef`; síntese/conceito nunca;
+- `test_excluded_work_never_appears_in_hierarchical_stage` — AC-07: obra
+  excluída ausente de candidatos, auditoria e finais; o conceito global é
+  selecionado via a edição permitida e a recuperação descendente exclue a
+  passagem da obra excluída;
+- `test_hierarchical_resolves_only_active_index_run_supports` — só suportes da
+  execução de indexação/enriquecimento vigente são resolvidos (execuções
+  inativas nunca localizadas);
+- `test_hierarchical_coordinates_with_expanded_strategy` — o estágio coordina
+  com a estratégia `expanded` (R03);
+- `test_hierarchical_hits_and_policy_version_persisted` — AC-15: auditoria e
+  política versionada idempotente.
+
+Critérios: AC-11 (cobertura comparativa/conceitual na recuperação via índice
+hierárquico — coberto), AC-12 (sínteses/conceitos localizam passagens e nunca
+são citações — coberto), AC-07 (exclusão de obra nos estágios lexical,
+vetorial, hierárquico, fusão e reranking — coberto).
+
+Limitações conhecidas: a seleção de nós usa FTS sobre o texto da síntese e o
+rótulo/aliases do conceito — a calibração de `max_summary_nodes`/
+`max_concept_nodes`/`max_passages_per_node` fica para o benchmark de T19
+(NOTES.md §4); os valores iniciais são conservadores e monotonos por
+profundidade.
 
 ### T10 — Planejador de consulta ✅
 

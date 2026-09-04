@@ -65,12 +65,15 @@ class TestAnswerRun:
         assert run.status is QueryStatus.ABSTAINED
 
     def test_candidates_record_all_stages(self) -> None:
-        """AC-06: rankings lexical, vetorial, RRF e reranking preservados."""
+        """AC-06: rankings lexical, vetorial, hierárquico, RRF e reranking preservados."""
         passage = uuid4()
         run = _run(
             candidates=[
                 RankedCandidate(passage_id=passage, stage=RankingStage.LEXICAL, score=12.5, rank=0),
                 RankedCandidate(passage_id=passage, stage=RankingStage.VECTOR, score=0.91, rank=2),
+                RankedCandidate(
+                    passage_id=passage, stage=RankingStage.HIERARCHICAL, score=0.05, rank=0
+                ),
                 RankedCandidate(passage_id=passage, stage=RankingStage.FUSED, score=0.033, rank=1),
                 RankedCandidate(
                     passage_id=passage, stage=RankingStage.RERANKED, score=0.87, rank=0

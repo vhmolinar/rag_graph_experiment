@@ -58,7 +58,13 @@ def test_summary_scope_values() -> None:
 
 
 def test_ranking_stage_values() -> None:
-    assert {s.value for s in RankingStage} == {"lexical", "vector", "fused", "reranked"}
+    assert {s.value for s in RankingStage} == {
+        "lexical",
+        "vector",
+        "hierarchical",
+        "fused",
+        "reranked",
+    }
 
 
 def test_query_status_values() -> None:
