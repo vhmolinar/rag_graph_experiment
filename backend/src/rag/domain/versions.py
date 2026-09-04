@@ -60,6 +60,11 @@ class RetrievalPolicyVersion(VersionRecord):
     """Parâmetros de recuperação: top_k, constante RRF, rerank_top_n, diversidade."""
 
 
+class ExpansionPolicyVersion(VersionRecord):
+    """Parâmetros da estratégia `expanded`: orçamento total por expansão
+    (max_expansions, top_k por expansão, teto total da fusão, rerank_top_n)."""
+
+
 class ContextPolicyVersion(VersionRecord):
     """Parâmetros de montagem de contexto: max_evidences, orçamento de
     contexto, expansão parental e limite flexível por edição (T12, AC-15)."""

@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
-from rag.domain.enums import Depth, QueryStatus, RankingStage
+from rag.domain.enums import Depth, QueryStatus, RankingStage, SearchStrategy
 from rag.domain.errors import InvalidTransitionError
 from rag.domain.query import EditionFilter
 from rag.domain.retrieval import (
@@ -336,6 +336,47 @@ class TestRetrievalResult:
         assert len(candidates) == 7
         assert sum(1 for c in candidates if c.stage == RankingStage.FUSED) == 5
         assert sum(1 for c in candidates if c.stage == RankingStage.RERANKED) == 2
+
+    def test_literal_final_candidates_uses_lexical_not_reranked(self) -> None:
+        """R02 (B01): num caso `literal` o ranking final para a montagem de
+        contexto é a lista lexical — não existe fusão nem reranking."""
+        a, b = uuid4(), uuid4()
+        lexical = (_candidate(a, RankingStage.LEXICAL, 12.0, 0),)
+        result = RetrievalResult(
+            lexical=lexical,
+            vector=(),
+            fused=(),
+            reranked=(_candidate(b, RankingStage.RERANKED, 0.9, 0),),
+            strategy=SearchStrategy.LITERAL,
+        )
+        assert result.final_candidates() == lexical
+
+    def test_hybrid_final_candidates_uses_reranked(self) -> None:
+        """R02: `hybrid`/`expanded` consumem o reranking como ranking final."""
+        a, b = uuid4(), uuid4()
+        reranked = (_candidate(b, RankingStage.RERANKED, 0.9, 0),)
+        result = RetrievalResult(
+            lexical=(_candidate(a, RankingStage.LEXICAL, 12.0, 0),),
+            reranked=reranked,
+            strategy=SearchStrategy.HYBRID,
+        )
+        assert result.final_candidates() == reranked
+
+    def test_literal_answer_run_candidates_only_lexical_stage(self) -> None:
+        """R02 (B01): os estágios persistidos correspondem à estratégia —
+        `literal` grava somente o estágio lexical no `AnswerRun`."""
+        a = uuid4()
+        lexical = (_candidate(a, RankingStage.LEXICAL, 12.0, 0),)
+        result = RetrievalResult(
+            lexical=lexical,
+            vector=(),
+            fused=(),
+            reranked=(),
+            strategy=SearchStrategy.LITERAL,
+        )
+        candidates = result.answer_run_candidates()
+        assert candidates == lexical
+        assert {c.stage for c in candidates} == {RankingStage.LEXICAL}
 
 
 class TestRetrievalServiceValidation:

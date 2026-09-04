@@ -43,7 +43,7 @@ from rag.domain.providers import (
     RerankerProvider,
     VerifierProvider,
 )
-from rag.domain.retrieval import RetrievalPolicy
+from rag.domain.retrieval import ExpansionPolicy, RetrievalPolicy
 from rag.domain.verification import VerificationPolicy
 from rag.infrastructure.artifacts import ArtifactStore
 from rag.infrastructure.config import DatabaseSettings, StorageSettings
@@ -60,6 +60,7 @@ class AppDependencies:
     context: ContextService
     dissertative: DissertativeService
     retrieval_policy: RetrievalPolicy
+    expansion_policy: ExpansionPolicy
     context_policy: ContextPolicy
     verification_policy: VerificationPolicy
     broker: EventBroker
