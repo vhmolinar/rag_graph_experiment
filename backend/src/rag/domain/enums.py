@@ -86,6 +86,19 @@ class RankingStage(StrEnum):
     RERANKED = "reranked"
 
 
+class ExpansionKind(StrEnum):
+    """Origem de uma consulta de expansão na estratégia `expanded` (SPEC §8.3).
+
+    R03 (B02): preservar a origem de cada candidato exige distinguir a
+    consulta principal das subperguntas e dos aliases gerados pelo provedor
+    de planejamento — cada origem é recuperada e ranqueada em separado.
+    """
+
+    PRIMARY = "primary"
+    SUBQUESTION = "subquestion"
+    ALIAS = "alias"
+
+
 class ArtifactKind(StrEnum):
     ORIGINAL = "original"
     OCR_TEXT_LAYER = "ocr_text_layer"

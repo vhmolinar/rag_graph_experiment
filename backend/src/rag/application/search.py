@@ -1,5 +1,5 @@
 """Serviço de recuperação: lexical + vetorial independentes, RRF, reranking
-(T09; SPEC §8.5, AC-05, AC-06, AC-07).
+(T09; SPEC §8.5, AC-05, AC-06, AC-07) e estratégia `expanded` (R03; SPEC §8.3).
 
 `RetrievalService` coordina os dois estágios de busca (reaproveitando
 `LexicalSearchRepository` de T08 e `VectorSearchRepository` desta tarefa),
@@ -8,22 +8,41 @@ reranker propagha ao chamador como erro tipado — nunca é mascarada devolvendo
 a lista fundida como se fora o resultado reranked (checklist §9). Scores e
 posições de todos os estágios ficam preservados em `RetrievalResult` (AC-06).
 
-A política de orçamento por profundidade é registrada como
-`RetrievalPolicyVersion` (idempotente via `VersionsRepository`) — uma
-execução pode reproduzir os parâmetros de recuperação usados (AC-15).
+Na estratégia `expanded`, a recuperação delega no `ExpansionExecutor` (R03):
+as subperguntas e os aliases do plano alteram os candidatos, cada expansão é
+recuperada e ranqueada em separado com os MESMOS filtros, e a fusão RRF
+deduplica as passagens recuperadas por várias expansões (a contribuição de
+cada expansão soma) sob um orçamento TOTAL (`ExpansionPolicy`, `fused_top_k`)
+— o orçamento nunca é multiplicado sem limite pelo número de subperguntas.
+
+As políticas de orçamento são registradas como versões imutáveis
+(`RetrievalPolicyVersion`/`ExpansionPolicyVersion`, idempotentes via
+`VersionsRepository`) — uma execução pode reproduzir os parâmetros de
+recuperação usados (AC-15).
 """
 
 from uuid import UUID
 
 from psycopg import AsyncConnection
 
+from rag.application.expansion import ExpansionExecutor
 from rag.domain.enums import Depth, QueryStatus, RankingStage, SearchStrategy
 from rag.domain.errors import ModelResponseError, NotFoundError
 from rag.domain.providers import EmbeddingProvider, RerankerProvider
-from rag.domain.query import EditionFilter, LexicalQuery
-from rag.domain.retrieval import RetrievalPolicy, RetrievalResult, fuse_rankings
+from rag.domain.query import EditionFilter, LexicalQuery, QueryPlan
+from rag.domain.retrieval import (
+    ExpansionPolicy,
+    RetrievalPolicy,
+    RetrievalResult,
+    fuse_rankings,
+)
 from rag.domain.runs import AnswerRun, RankedCandidate
-from rag.domain.versions import EmbeddingVersion, RetrievalPolicyVersion, utcnow
+from rag.domain.versions import (
+    EmbeddingVersion,
+    ExpansionPolicyVersion,
+    RetrievalPolicyVersion,
+    utcnow,
+)
 from rag.infrastructure.repositories.passages import PassagesRepository
 from rag.infrastructure.repositories.runs import AnswerRunsRepository
 from rag.infrastructure.repositories.search import LexicalSearchRepository
@@ -51,6 +70,8 @@ class RetrievalService:
         policy: RetrievalPolicy | None = None,
         depth: Depth = Depth.STANDARD,
         strategy: SearchStrategy = SearchStrategy.HYBRID,
+        plan: QueryPlan | None = None,
+        expansion_policy: ExpansionPolicy | None = None,
     ) -> RetrievalResult:
         if not isinstance(run, AnswerRun):
             raise TypeError(
@@ -64,6 +85,28 @@ class RetrievalService:
         policy = policy if policy is not None else RetrievalPolicy.defaults()
         budget = policy.budget_for(depth)
         filters = filters if filters is not None else EditionFilter()
+
+        if strategy is SearchStrategy.EXPANDED:
+            # R03 (B02): sem plano não há subperguntas/aliases a executar —
+            # o plano nunca declara expansão sem expansão a executar (T10-02).
+            if plan is None:
+                raise TypeError(
+                    "estratégia 'expanded' exige o plano (subperguntas/aliases) "
+                    "para executar a expansão (SPEC §8.3)"
+                )
+            if expansion_policy is None:
+                raise TypeError(
+                    "estratégia 'expanded' exige a política de expansão "
+                    "(orçamento total versionado)"
+                )
+            return await self._retrieve_expanded(
+                conn,
+                plan=plan,
+                filters=filters,
+                policy=expansion_policy,
+                run=run,
+                depth=depth,
+            )
 
         if strategy is not SearchStrategy.LITERAL:
             # Falha fechada antes de consultar o banco quando o pipeline
@@ -102,7 +145,7 @@ class RetrievalService:
                 run_id=run.id,
                 strategy=strategy,
             )
-            await self._persist(conn, run, result, policy_version.id)
+            await self._persist(conn, run, result, retrieval_policy_version_id=policy_version.id)
             return result
 
         # `hybrid`/`expanded`: embedding + busca vetorial + RRF + reranking
@@ -141,7 +184,96 @@ class RetrievalService:
         )
 
         # R2-T9-02 (AC-06, AC-15): persistência obrigatória dos rankings e versões no AnswerRun
-        await self._persist(conn, run, result, policy_version.id, registered_emb_version.id)
+        await self._persist(
+            conn,
+            run,
+            result,
+            retrieval_policy_version_id=policy_version.id,
+            embedding_version_id=registered_emb_version.id,
+        )
+        return result
+
+    async def _retrieve_expanded(
+        self,
+        conn: AsyncConnection,
+        *,
+        plan: QueryPlan,
+        filters: EditionFilter,
+        policy: ExpansionPolicy,
+        run: AnswerRun,
+        depth: Depth,
+    ) -> RetrievalResult:
+        """Executa a estratégia `expanded` (R03; SPEC §8.3, B02).
+
+        - orçamento TOTAL por profundidade (`ExpansionBudget`): o número de
+          expansões é limitado e a fusão é tetada por `fused_top_k` — o total
+          não é multiplicado sem limite pelo número de subperguntas;
+        - cada expansão (principal, subperguntas, aliases) é recuperada e
+          ranqueada em separado (`ExpansionExecutor`), com os MESMOS filtros;
+        - a fusão RRF deduplica as passagens recuperadas por várias expansões
+          (a contribuição de cada expansão soma em `fuse_rankings`);
+        - reranking só toca os candidatos permitidos (obra excluída nunca chega);
+        - todas as consultas, scores e posições ficam registrados em
+          `RetrievalResult.expansions` e persistidos em `AnswerRun.expansions`.
+        """
+        budget = policy.budget_for(depth)
+        try:
+            emb_version = self._embedding.embedding_version
+        except AttributeError as err:
+            raise TypeError(
+                "embedding_provider deve implementar a propriedade 'embedding_version' "
+                f"(SPEC §8.5, AC-05, AC-15): {err}"
+            ) from err
+        if not isinstance(emb_version, EmbeddingVersion):
+            raise TypeError(
+                "embedding_provider.embedding_version deve ser EmbeddingVersion, "
+                f"recebido {type(emb_version).__name__}"
+            )
+        registered_emb_version = await VersionsRepository(conn).get_or_create(emb_version)
+
+        executor = ExpansionExecutor(self._embedding)
+        expansions = executor.build_expansions(plan, budget)
+        per_expansion = await executor.search(
+            conn,
+            expansions=expansions,
+            embedding_version_id=registered_emb_version.id,
+            filters=filters,
+            budget=budget,
+        )
+
+        all_lists: list[tuple[RankedCandidate, ...] | list[RankedCandidate]] = []
+        for exp_result in per_expansion:
+            all_lists.append(exp_result.lexical)
+            all_lists.append(exp_result.vector)
+        fused_full = fuse_rankings(all_lists, k=budget.rrf_k)
+        fused = fused_full[: budget.fused_top_k]
+        rerank_candidates = fused[: budget.rerank_top_n]
+
+        texts = await self._passage_texts(conn, rerank_candidates)
+        reranked = await self._reranked(rerank_candidates, plan.semantic_query, texts)
+
+        lexical_flat = tuple(c for exp_result in per_expansion for c in exp_result.lexical)
+        vector_flat = tuple(c for exp_result in per_expansion for c in exp_result.vector)
+
+        policy_version = await self._register_expansion_policy(conn, policy)
+        result = RetrievalResult(
+            lexical=lexical_flat,
+            vector=vector_flat,
+            fused=fused,
+            reranked=reranked,
+            expansions=per_expansion,
+            policy_version_id=policy_version.id,
+            embedding_version_id=registered_emb_version.id,
+            run_id=run.id,
+            strategy=SearchStrategy.EXPANDED,
+        )
+        await self._persist(
+            conn,
+            run,
+            result,
+            expansion_policy_version_id=policy_version.id,
+            embedding_version_id=registered_emb_version.id,
+        )
         return result
 
     @staticmethod
@@ -149,25 +281,47 @@ class RetrievalService:
         conn: AsyncConnection,
         run: AnswerRun,
         result: RetrievalResult,
-        policy_version_id: UUID,
+        *,
+        retrieval_policy_version_id: UUID | None = None,
+        expansion_policy_version_id: UUID | None = None,
         embedding_version_id: UUID | None = None,
     ) -> None:
-        version_updates: dict[str, object] = {
-            "retrieval_policy_version_id": policy_version_id,
-            "embedding_version_id": embedding_version_id,
-        }
+        version_updates: dict[str, object] = {}
+        if retrieval_policy_version_id is not None:
+            version_updates["retrieval_policy_version_id"] = retrieval_policy_version_id
+        if expansion_policy_version_id is not None:
+            version_updates["expansion_policy_version_id"] = expansion_policy_version_id
+        if embedding_version_id is not None:
+            version_updates["embedding_version_id"] = embedding_version_id
         new_versions = run.versions.model_copy(update=version_updates)
         target_status = (
             QueryStatus.RUNNING
             if run.status in (QueryStatus.QUEUED, QueryStatus.RUNNING)
             else run.status
         )
-        updated_run = run.transition(
-            target_status,
-            candidates=(*run.candidates, *result.answer_run_candidates()),
-            versions=new_versions,
-        )
+        changes: dict[str, object] = {
+            "candidates": (*run.candidates, *result.answer_run_candidates()),
+            "versions": new_versions,
+        }
+        if result.expansions:
+            # R03 (B02): rastreabilidade das consultas/scores/posições por
+            # expansão persistida no AnswerRun (append-only).
+            changes["expansions"] = (*run.expansions, *result.expansions)
+        updated_run = run.transition(target_status, **changes)
         await AnswerRunsRepository(conn).save(updated_run)
+
+    @staticmethod
+    async def _register_expansion_policy(
+        conn: AsyncConnection, policy: ExpansionPolicy
+    ) -> ExpansionPolicyVersion:
+        version = await VersionsRepository(conn).get_or_create(
+            ExpansionPolicyVersion(
+                label="expansion-policy",
+                params=policy.model_dump(mode="json"),
+                created_at=utcnow(),
+            )
+        )
+        return version
 
     @staticmethod
     async def _passage_texts(

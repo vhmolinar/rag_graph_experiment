@@ -14,6 +14,7 @@ _JSONB_COLUMNS = (
     "inferred_filters",
     "plan",
     "candidates",
+    "expansions",
     "selected_evidence_ids",
     "response",
     "verification",
@@ -44,15 +45,15 @@ class AnswerRunsRepository:
                 INSERT INTO answer_runs (id, session_id, status, question_original,
                                          question_anonymized, rewritten_query,
                                          explicit_filters, inferred_filters, plan,
-                                         candidates, selected_evidence_ids, response,
-                                         verification, versions, latencies, error_code,
-                                         error_message, request_id, created_at)
+                                         candidates, expansions, selected_evidence_ids,
+                                         response, verification, versions, latencies,
+                                         error_code, error_message, request_id, created_at)
                 VALUES (%(id)s, %(session_id)s, %(status)s, %(question_original)s,
                         %(question_anonymized)s, %(rewritten_query)s,
                         %(explicit_filters)s, %(inferred_filters)s, %(plan)s,
-                        %(candidates)s, %(selected_evidence_ids)s, %(response)s,
-                        %(verification)s, %(versions)s, %(latencies)s, %(error_code)s,
-                        %(error_message)s, %(request_id)s, %(created_at)s)
+                        %(candidates)s, %(expansions)s, %(selected_evidence_ids)s,
+                        %(response)s, %(verification)s, %(versions)s, %(latencies)s,
+                        %(error_code)s, %(error_message)s, %(request_id)s, %(created_at)s)
                 """,
                 {
                     "id": run.id,
@@ -67,6 +68,7 @@ class AnswerRunsRepository:
                     else None,
                     "plan": Jsonb(data["plan"]) if data["plan"] is not None else None,
                     "candidates": Jsonb(data["candidates"]),
+                    "expansions": Jsonb(data["expansions"]),
                     "selected_evidence_ids": Jsonb(data["selected_evidence_ids"]),
                     "response": Jsonb(data["response"]) if data["response"] is not None else None,
                     "verification": Jsonb(data["verification"])
@@ -135,6 +137,7 @@ class AnswerRunsRepository:
                     inferred_filters = %(inferred_filters)s,
                     plan = %(plan)s,
                     candidates = %(candidates)s,
+                    expansions = %(expansions)s,
                     selected_evidence_ids = %(selected_evidence_ids)s,
                     response = %(response)s,
                     verification = %(verification)s,
@@ -156,6 +159,7 @@ class AnswerRunsRepository:
                     else None,
                     "plan": Jsonb(data["plan"]) if data["plan"] is not None else None,
                     "candidates": Jsonb(data["candidates"]),
+                    "expansions": Jsonb(data["expansions"]),
                     "selected_evidence_ids": Jsonb(data["selected_evidence_ids"]),
                     "response": Jsonb(data["response"]) if data["response"] is not None else None,
                     "verification": Jsonb(data["verification"])
@@ -183,8 +187,8 @@ class AnswerRunsRepository:
             await cur.execute(
                 "SELECT id, session_id, status, question_original, question_anonymized, "
                 "rewritten_query, explicit_filters, inferred_filters, plan, candidates, "
-                "selected_evidence_ids, response, verification, versions, latencies, "
-                "error_code, error_message, request_id, created_at, revision "
+                "expansions, selected_evidence_ids, response, verification, versions, "
+                "latencies, error_code, error_message, request_id, created_at, revision "
                 "FROM answer_runs WHERE id = %s",
                 (run_id,),
             )
