@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
-from rag.domain.enums import Depth, QueryStatus, RankingStage
+from rag.domain.enums import Depth, QueryStatus, RankingStage, SearchStrategy
 from rag.domain.errors import InvalidTransitionError
 from rag.domain.query import EditionFilter
 from rag.domain.retrieval import (
@@ -271,19 +271,20 @@ class TestRetrievalBudgetAndPolicy:
 
 class TestRetrievalResult:
     def test_answer_run_candidates_preserves_all_stages(self) -> None:
-        """AC-06: a tuple a persistir mantém lexical, vetorial, RRF e
-        reranking distintos e rastreáveis."""
+        """AC-06: a tuple a persistir mantém lexical, vetorial, hierárquico,
+        RRF e reranking distintos e rastreáveis."""
         a, b = uuid4(), uuid4()
         result = RetrievalResult(
             lexical=(_candidate(a, RankingStage.LEXICAL, 12.0, 0),),
             vector=(_candidate(a, RankingStage.VECTOR, 0.91, 0),),
+            hierarchical=(_candidate(a, RankingStage.HIERARCHICAL, 0.04, 0),),
             fused=(_candidate(a, RankingStage.FUSED, 0.033, 0),),
             reranked=(_candidate(b, RankingStage.RERANKED, 0.87, 0),),
             policy_version_id=uuid4(),
         )
         candidates = result.answer_run_candidates()
         assert {c.stage for c in candidates} == set(RankingStage)
-        assert len(candidates) == 4
+        assert len(candidates) == 5
 
     def test_candidates_persist_into_answer_run_append_only(self) -> None:
         """AC-06: as transições de `AnswerRun.candidates` aceitam o resultado
@@ -292,6 +293,7 @@ class TestRetrievalResult:
         result = RetrievalResult(
             lexical=(_candidate(a, RankingStage.LEXICAL, 1.0, 0),),
             vector=(_candidate(b, RankingStage.VECTOR, 0.9, 0),),
+            hierarchical=(_candidate(a, RankingStage.HIERARCHICAL, 0.05, 0),),
             fused=(_candidate(a, RankingStage.FUSED, 0.03, 0),),
             reranked=(_candidate(b, RankingStage.RERANKED, 0.8, 0),),
         )
@@ -301,7 +303,7 @@ class TestRetrievalResult:
             explicit_filters=EditionFilter(),
             created_at=utcnow(),
         ).transition(QueryStatus.RUNNING, candidates=result.answer_run_candidates())
-        assert len(run.candidates) == 4
+        assert len(run.candidates) == 5
         assert {c.stage for c in run.candidates} == set(RankingStage)
         with pytest.raises(InvalidTransitionError, match="append-only"):
             run.transition(QueryStatus.RUNNING, candidates=())  # append-only
@@ -336,6 +338,47 @@ class TestRetrievalResult:
         assert len(candidates) == 7
         assert sum(1 for c in candidates if c.stage == RankingStage.FUSED) == 5
         assert sum(1 for c in candidates if c.stage == RankingStage.RERANKED) == 2
+
+    def test_literal_final_candidates_uses_lexical_not_reranked(self) -> None:
+        """R02 (B01): num caso `literal` o ranking final para a montagem de
+        contexto é a lista lexical — não existe fusão nem reranking."""
+        a, b = uuid4(), uuid4()
+        lexical = (_candidate(a, RankingStage.LEXICAL, 12.0, 0),)
+        result = RetrievalResult(
+            lexical=lexical,
+            vector=(),
+            fused=(),
+            reranked=(_candidate(b, RankingStage.RERANKED, 0.9, 0),),
+            strategy=SearchStrategy.LITERAL,
+        )
+        assert result.final_candidates() == lexical
+
+    def test_hybrid_final_candidates_uses_reranked(self) -> None:
+        """R02: `hybrid`/`expanded` consumem o reranking como ranking final."""
+        a, b = uuid4(), uuid4()
+        reranked = (_candidate(b, RankingStage.RERANKED, 0.9, 0),)
+        result = RetrievalResult(
+            lexical=(_candidate(a, RankingStage.LEXICAL, 12.0, 0),),
+            reranked=reranked,
+            strategy=SearchStrategy.HYBRID,
+        )
+        assert result.final_candidates() == reranked
+
+    def test_literal_answer_run_candidates_only_lexical_stage(self) -> None:
+        """R02 (B01): os estágios persistidos correspondem à estratégia —
+        `literal` grava somente o estágio lexical no `AnswerRun`."""
+        a = uuid4()
+        lexical = (_candidate(a, RankingStage.LEXICAL, 12.0, 0),)
+        result = RetrievalResult(
+            lexical=lexical,
+            vector=(),
+            fused=(),
+            reranked=(),
+            strategy=SearchStrategy.LITERAL,
+        )
+        candidates = result.answer_run_candidates()
+        assert candidates == lexical
+        assert {c.stage for c in candidates} == {RankingStage.LEXICAL}
 
 
 class TestRetrievalServiceValidation:

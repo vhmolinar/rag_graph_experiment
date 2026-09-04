@@ -809,6 +809,9 @@ class TestAnswerRuns:
                     passage_id=passage_b, stage=RankingStage.VECTOR, score=0.95, rank=0
                 ),
                 RankedCandidate(
+                    passage_id=passage_a, stage=RankingStage.HIERARCHICAL, score=0.04, rank=0
+                ),
+                RankedCandidate(
                     passage_id=passage_a, stage=RankingStage.FUSED, score=0.033, rank=0
                 ),
                 RankedCandidate(

@@ -17,7 +17,9 @@ from rag.domain.versions import (
     ChunkingVersion,
     ContextPolicyVersion,
     EmbeddingVersion,
+    ExpansionPolicyVersion,
     ExtractionVersion,
+    HierarchicalPolicyVersion,
     ModelEndpointVersion,
     PromptVersion,
     RetrievalPolicyVersion,
@@ -50,6 +52,8 @@ _TABLES: dict[type[VersionRecord], tuple[str, tuple[str, ...], tuple[str, ...]]]
         ("label", "template_sha256", "params"),
     ),
     RetrievalPolicyVersion: ("retrieval_policy_versions", (), ("label", "params")),
+    ExpansionPolicyVersion: ("expansion_policy_versions", (), ("label", "params")),
+    HierarchicalPolicyVersion: ("hierarchical_policy_versions", (), ("label", "params")),
     ContextPolicyVersion: ("context_policy_versions", (), ("label", "params")),
     VerificationPolicyVersion: ("verification_policy_versions", (), ("label", "params")),
 }

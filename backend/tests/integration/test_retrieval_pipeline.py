@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 from model_doubles import ConceptEmbeddingProvider, FakeRerankerProvider, concept_embedding
 
 from rag.application.search import RetrievalService
-from rag.domain.enums import Depth, QueryStatus, RankingStage, SourceType
+from rag.domain.enums import Depth, QueryStatus, RankingStage, SearchStrategy, SourceType
 from rag.domain.errors import ModelTimeoutError
 from rag.domain.indexing import IndexRun
 from rag.domain.library import Edition, Passage, Work
@@ -687,3 +687,40 @@ async def test_retrieval_service_rejects_provider_without_embedding_version_agai
                 semantic_query=_SEMANTIC_QUERY,
                 run=run,
             )
+
+
+async def test_literal_strategy_skips_semantic_providers_and_stages(db: Database) -> None:
+    """B01: literal é lexical-only e não depende de falhas de modelos."""
+    corpus = await _seed(db)
+
+    class FailingEmbedding(ConceptEmbeddingProvider):
+        async def embed_query(self, text: str) -> list[float]:
+            raise AssertionError("embedding não pode ser chamado em literal")
+
+    class FailingReranker(FakeRerankerProvider):
+        async def rerank(self, query: str, documents: list[str]) -> list[float]:
+            raise AssertionError("reranker não pode ser chamado em literal")
+
+    async with db.connection() as conn:
+        run = await _create_run(conn)
+        result = await RetrievalService(FailingEmbedding(), FailingReranker()).retrieve(
+            conn,
+            lexical_query=LexicalQuery(required_terms=("sufoca",)),
+            semantic_query="não deve chamar embedding",
+            filters=None,
+            policy=RetrievalPolicy.defaults(),
+            depth=Depth.STANDARD,
+            run=run,
+            strategy=SearchStrategy.LITERAL,
+        )
+        reloaded = await AnswerRunsRepository(conn).get(run.id)
+
+    assert [candidate.passage_id for candidate in result.lexical] == [corpus.a]
+    assert result.strategy is SearchStrategy.LITERAL
+    assert result.vector == ()
+    assert result.fused == ()
+    assert result.reranked == ()
+    assert result.final_candidates() == result.lexical
+    assert reloaded is not None
+    assert {candidate.stage for candidate in reloaded.candidates} == {RankingStage.LEXICAL}
+    assert reloaded.versions.embedding_version_id is None
